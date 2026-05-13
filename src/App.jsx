@@ -44,7 +44,7 @@ const RAID_FAMILIES = [
 
 // Google Apps Script 웹앱 URL을 여기에 넣으면 공유 상태 저장/불러오기가 동작한다.
 // 예: https://script.google.com/macros/s/xxxx/exec
-const SHEET_STATE_API_URL = "https://script.google.com/macros/s/AKfycbwmCdm0iY4EXs96avcrrLUCh6B9sfpSlua6G5D2Eb-ebvEQQYduJAJmQpBnWW8FzPbYQA/exec";
+const SHEET_STATE_API_URL = import.meta.env.VITE_SHEET_STATE_API_URL ?? "";
 
 const SHARED_STATE_VERSION = 1;
 
