@@ -15,13 +15,13 @@ const ROLE_SLOT_RULE = {
 
 // 보기 좋은 출력 순서
 const RAID_DISPLAY_ORDER = [
-  "cathedral_1",
-  "serka_normal",
-  "end_normal",
-  "cathedral_2",
-  "serka_hard",
-  "end_hard",
   "cathedral_3",
+  "cathedral_2",
+  "cathedral_1",
+  "serka_hard",
+  "serka_normal",
+  "end_hard",
+  "end_normal",
 ];
 
 const RAID_FAMILIES = [
@@ -44,7 +44,7 @@ const RAID_FAMILIES = [
 
 // Google Apps Script 웹앱 URL을 여기에 넣으면 공유 상태 저장/불러오기가 동작한다.
 // 예: https://script.google.com/macros/s/xxxx/exec
-const SHEET_STATE_API_URL = "https://script.google.com/macros/s/AKfycbwmCdm0iY4EXs96avcrrLUCh6B9sfpSlua6G5D2Eb-ebvEQQYduJAJmQpBnWW8FzPbYQA/exec";
+const SHEET_STATE_API_URL = import.meta.env.VITE_SHEET_STATE_API_URL ?? "";
 
 const SHARED_STATE_VERSION = 1;
 
@@ -305,6 +305,55 @@ const styles = {
     padding: "10px",
     fontSize: "11px",
     fontWeight: 700,
+  },
+  overviewGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(360px, 360px))",
+    gap: "10px",
+    justifyContent: "start",
+  },
+  overviewGridWide: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(360px, 360px))",
+    gap: "10px",
+    justifyContent: "start",
+  },
+  overviewRaidCard: {
+    background: "#ffffff",
+    border: "1px solid #e5e7eb",
+    borderRadius: "14px",
+    padding: "10px",
+    boxShadow: "0 1px 3px rgba(15, 23, 42, 0.05)",
+  },
+  overviewPartyCard: {
+    border: "1px solid #e5e7eb",
+    borderRadius: "10px",
+    padding: "8px",
+    background: "#f9fafb",
+  },
+  overviewMember: {
+    border: "1px solid #e5e7eb",
+    borderRadius: "8px",
+    padding: "5px 6px",
+    background: "#ffffff",
+    minWidth: 0,
+  },
+  overviewMemberName: {
+    fontSize: "11px",
+    fontWeight: 900,
+    lineHeight: 1.15,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  overviewMemberClass: {
+    marginTop: "2px",
+    fontSize: "10px",
+    color: "#6b7280",
+    fontWeight: 750,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
   },
 };
 
@@ -845,6 +894,91 @@ function cloneScheduleGroups(groups) {
   }));
 }
 
+function isValidScheduleGroups(groups) {
+  if (!Array.isArray(groups)) return false;
+
+  return groups.every(
+    (group) =>
+      group &&
+      group.raid &&
+      group.raid.key &&
+      Array.isArray(group.parties) &&
+      group.parties.every(
+        (party) => party && party.raid && party.raid.key && Array.isArray(party.slots)
+      )
+  );
+}
+
+function compactMemberForSave(member) {
+  if (!member) return null;
+
+  return {
+    owner: member.owner,
+    name: member.name,
+    className: member.className,
+    build: member.build,
+    level: member.level,
+    power: member.power,
+    reserve: Boolean(member.reserve),
+    roleOverride: member.roleOverride,
+  };
+}
+
+function compactScheduleGroups(groups) {
+  if (!isValidScheduleGroups(groups)) return null;
+
+  return groups.map((group) => ({
+    raidKey: group.raid.key,
+    parties: group.parties.map((party) => ({
+      id: party.id,
+      slots: party.slots.map((slot) => ({
+        role: slot.role,
+        group: slot.group,
+        member: compactMemberForSave(slot.member),
+      })),
+    })),
+  }));
+}
+
+function hydrateSavedScheduleGroups(savedGroups) {
+  if (!Array.isArray(savedGroups)) return null;
+
+  const hydrated = savedGroups
+    .map((group) => {
+      const raid = getRaidByKey(group.raidKey ?? group.raid?.key);
+      if (!raid || !Array.isArray(group.parties)) return null;
+
+      const parties = group.parties
+        .map((party, partyIndex) => {
+          if (!Array.isArray(party.slots)) return null;
+
+          const normalizedParty = {
+            id: party.id ?? `${raid.key}-${partyIndex + 1}`,
+            raid,
+            slots: party.slots.map((slot) => ({
+              role: slot.role,
+              group: slot.group ?? "A",
+              member: slot.member ?? null,
+            })),
+            synergyCounts: {},
+          };
+
+          rebuildSynergyCounts(normalizedParty);
+          return normalizedParty;
+        })
+        .filter(Boolean);
+
+      return {
+        raid,
+        parties,
+        targetAvgPower: 0,
+      };
+    })
+    .filter(Boolean);
+
+  return isValidScheduleGroups(hydrated) ? hydrated : null;
+}
+
 function findPartyById(groups, raidKey, partyId) {
   const group = groups.find((item) => item.raid.key === raidKey);
   if (!group) return null;
@@ -906,7 +1040,11 @@ function validateAllManualGroups(groups, raidPreferences = {}) {
       }
 
       for (const member of members) {
-        if (!canCharacterEnterRaid(member, group.raid, raidPreferences)) {
+        const canEnter = member.reserve
+          ? member.level >= group.raid.minLevel && member.level <= group.raid.maxLevel
+          : canCharacterEnterRaid(member, group.raid, raidPreferences);
+
+        if (!canEnter) {
           errors.push(`${group.raid.name}: ${member.name} 레벨이 맞지 않습니다.`);
         }
       }
@@ -1428,7 +1566,9 @@ function getSelectedReserveCharactersForRaid(raid, reserveCharacters, reserveRai
 
   return reserveCharacters
     .filter((character) => isOwnerEnabledForRaid(ownerToggles, raid.key, character.owner))
-    .filter((character) => canCharacterEnterRaid(character, raid, raidPreferences))
+    .filter(
+      (character) => character.level >= raid.minLevel && character.level <= raid.maxLevel
+    )
     .sort((a, b) => getEffectivePower(b) - getEffectivePower(a))
     .slice(0, count);
 }
@@ -1508,20 +1648,25 @@ function generateSchedule({ selectedRaidKeys, roleOverrides, ownerToggles, reser
   });
 
   for (const character of sortedCharacters) {
-    const eligibleRaids = getEligibleRaids(character, selectedRaidKeys, raidPreferences).filter((raid) => {
-      if (!isOwnerEnabledForRaid(ownerToggles, raid.key, character.owner)) return false;
-      if (character.reserve) {
-        return isReserveSelectedForRaid(
-          character,
-          raid,
-          reserveCharacters,
-          reserveRaidCounts,
-          ownerToggles,
-          raidPreferences
-        );
-      }
-      return true;
-    });
+    const eligibleRaids = (character.reserve
+      ? selectedRaids.filter((raid) => {
+          if (!isOwnerEnabledForRaid(ownerToggles, raid.key, character.owner)) return false;
+          if (character.level < raid.minLevel || character.level > raid.maxLevel) return false;
+
+          return isReserveSelectedForRaid(
+            character,
+            raid,
+            reserveCharacters,
+            reserveRaidCounts,
+            ownerToggles,
+            raidPreferences
+          );
+        })
+      : getEligibleRaids(character, selectedRaidKeys, raidPreferences).filter((raid) => {
+          if (!isOwnerEnabledForRaid(ownerToggles, raid.key, character.owner)) return false;
+          return true;
+        })
+    );
 
     if (!eligibleRaids.length) {
       unableCharacters.push({ ...character, reason: "선택된 레이드 중 입장 가능한 레이드 없음" });
@@ -1809,6 +1954,171 @@ function EmptySlot({ role, slotGroup, dragRef, onDropCharacter }) {
   );
 }
 
+function getOwnerColorStyle(owner) {
+  const preferredOwnerColorOrder = [
+    "재진",
+    "강찬",
+    "준형",
+    "준혁",
+    "혜연",
+    "영수",
+    "찬범",
+    "혁준",
+  ];
+
+  const allOwners = [...new Set(CHARACTERS.map((character) => character.owner))];
+  const extraOwners = allOwners
+    .filter((item) => !preferredOwnerColorOrder.includes(item))
+    .sort((a, b) => a.localeCompare(b, "ko"));
+
+  const ownersForColor = [...preferredOwnerColorOrder, ...extraOwners].filter((item) =>
+    allOwners.includes(item)
+  );
+
+  const palettes = [
+    { background: "#eef6ff", border: "#60a5fa", color: "#1d4ed8" },
+    { background: "#f0fdf4", border: "#4ade80", color: "#15803d" },
+    { background: "#fff7ed", border: "#fb923c", color: "#c2410c" },
+    { background: "#f5f3ff", border: "#a78bfa", color: "#6d28d9" },
+    { background: "#fdf2f8", border: "#f472b6", color: "#be185d" },
+    { background: "#ecfeff", border: "#22d3ee", color: "#0e7490" },
+    { background: "#fefce8", border: "#eab308", color: "#a16207" },
+    { background: "#f1f5f9", border: "#94a3b8", color: "#475569" },
+    { background: "#fef2f2", border: "#f87171", color: "#b91c1c" },
+    { background: "#f0fdfa", border: "#2dd4bf", color: "#0f766e" },
+    { background: "#eef2ff", border: "#818cf8", color: "#4338ca" },
+    { background: "#faf5ff", border: "#c084fc", color: "#7e22ce" },
+  ];
+
+  const index = Math.max(0, ownersForColor.indexOf(owner));
+  return palettes[index % palettes.length];
+}
+
+function CompactMember({ slot }) {
+  if (!slot.member) {
+    return (
+      <div
+        style={{
+          ...styles.overviewMember,
+          borderStyle: "dashed",
+          background: "#f3f4f6",
+          color: "#9ca3af",
+          fontWeight: 900,
+          textAlign: "center",
+        }}
+      >
+        공팟
+      </div>
+    );
+  }
+
+  const ownerColorStyle = getOwnerColorStyle(slot.member.owner);
+
+  return (
+    <div
+      style={{
+        ...styles.overviewMember,
+        background: ownerColorStyle.background,
+        borderColor: ownerColorStyle.border,
+        color: ownerColorStyle.color,
+      }}
+      title={`${slot.member.owner} · ${slot.member.name} · ${slot.member.className}`}
+    >
+      <div style={{ ...styles.overviewMemberName, color: ownerColorStyle.color }}>
+        {slot.member.name}
+      </div>
+      <div style={{ ...styles.overviewMemberClass, color: ownerColorStyle.color }}>
+        {slot.member.className}
+      </div>
+    </div>
+  );
+}
+
+function RaidOverview({ groups, completedPartyKeys }) {
+  const orderedGroups = [...groups].sort(
+    (a, b) => getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid)
+  );
+
+  const renderOverviewGroup = (group) => (
+    <div key={`overview-${group.raid.key}`} style={styles.overviewRaidCard}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+        <strong style={{ fontSize: "14px" }}>{group.raid.name}</strong>
+        <span style={styles.smallText}>{group.parties.length}개</span>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        {group.parties.map((party, partyIndex) => {
+          const isDone = completedPartyKeys.includes(getPartyDoneKey(party));
+          const isEightRaid = party.raid.partySize === 8;
+          const slotGroups = [...new Set(party.slots.map((slot) => slot.group))];
+
+          return (
+            <div
+              key={`overview-${party.id}`}
+              style={{
+                ...styles.overviewPartyCard,
+                opacity: isDone ? 0.45 : 1,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                <strong style={{ fontSize: "12px" }}>
+                  {isEightRaid ? `공대 ${partyIndex + 1}` : `파티 ${partyIndex + 1}`}
+                </strong>
+                {isDone && <span style={styles.smallText}>완료</span>}
+              </div>
+
+              {isEightRaid ? (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "8px" }}>
+                  {slotGroups.map((slotGroup) => {
+                    const groupSlots = party.slots.filter((slot) => slot.group === slotGroup);
+                    return (
+                      <div key={slotGroup}>
+                        <div style={{ ...styles.smallText, fontWeight: 900, marginBottom: "4px" }}>
+                          {slotGroup === "A" ? "1파티" : "2파티"}
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px" }}>
+                          {groupSlots.map((slot, slotIndex) => (
+                            <CompactMember key={`${party.id}-${slotGroup}-${slotIndex}`} slot={slot} />
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px" }}>
+                  {party.slots.map((slot, slotIndex) => (
+                    <CompactMember key={`${party.id}-${slotIndex}`} slot={slot} />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  return (
+    <section style={styles.card}>
+      <div style={styles.cardPad}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", marginBottom: "10px" }}>
+          <div>
+            <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>레이드 현황 한눈에 보기</h2>
+            <p style={{ ...styles.smallText, margin: "4px 0 0" }}>
+              닉네임과 직업만 간단히 표시합니다.
+            </p>
+          </div>
+        </div>
+
+        <div style={styles.overviewGrid}>
+          {orderedGroups.map(renderOverviewGroup)}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function PartyCard({
   party,
   index,
@@ -1982,6 +2292,7 @@ export default function LostArkRaidPartyPlanner() {
   const [manualSwapMessage, setManualSwapMessage] = useState("");
   const [completedPartyKeys, setCompletedPartyKeys] = useState([]);
   const [savedScheduleGroups, setSavedScheduleGroups] = useState(null);
+  const [showRaidOverview, setShowRaidOverview] = useState(false);
   const [savedScheduleGroupsBeforePending, setSavedScheduleGroupsBeforePending] = useState(null);
   const [lastSyncedSavedScheduleGroups, setLastSyncedSavedScheduleGroups] = useState(null);
   const [seed, setSeed] = useState(0);
@@ -1989,9 +2300,18 @@ export default function LostArkRaidPartyPlanner() {
   const [sharedSyncStatus, setSharedSyncStatus] = useState(
     SHEET_STATE_API_URL ? "공유 동기화 준비됨" : "공유 URL 미설정"
   );
+  const [sharedInitialLoading, setSharedInitialLoading] = useState(Boolean(SHEET_STATE_API_URL));
   const hasLoadedSharedStateRef = useRef(false);
   const isApplyingSharedStateRef = useRef(false);
   const lastSavedSharedStateRef = useRef("");
+
+  const getCurrentFinalGroups = () => {
+    const calculatedGroups = applyManualSwapsToGroups(schedule.groups, manualSwaps);
+    const hydratedSavedGroups = hydrateSavedScheduleGroups(savedScheduleGroups);
+
+    return hydratedSavedGroups ??
+      (isValidScheduleGroups(savedScheduleGroups) ? savedScheduleGroups : calculatedGroups);
+  };
 
   const getSharedStateSnapshot = () => ({
     version: SHARED_STATE_VERSION,
@@ -2003,7 +2323,7 @@ export default function LostArkRaidPartyPlanner() {
     manualSwaps,
     confirmedManualSwaps,
     completedPartyKeys,
-    savedScheduleGroups: getCurrentFinalGroups(),
+    savedScheduleGroups: compactScheduleGroups(getCurrentFinalGroups()),
   });
 
   const applySharedState = (state) => {
@@ -2017,9 +2337,10 @@ export default function LostArkRaidPartyPlanner() {
     setManualSwaps(state.manualSwaps ?? []);
     setConfirmedManualSwaps(state.confirmedManualSwaps ?? []);
     setCompletedPartyKeys(state.completedPartyKeys ?? []);
-    const loadedSavedGroups = isValidSavedScheduleGroups(state.savedScheduleGroups)
-      ? state.savedScheduleGroups
-      : null;
+
+    const loadedSavedGroups =
+      hydrateSavedScheduleGroups(state.savedScheduleGroups) ??
+      (isValidScheduleGroups(state.savedScheduleGroups) ? state.savedScheduleGroups : null);
     setSavedScheduleGroups(loadedSavedGroups);
     setLastSyncedSavedScheduleGroups(loadedSavedGroups);
     setSavedScheduleGroupsBeforePending(null);
@@ -2032,6 +2353,7 @@ export default function LostArkRaidPartyPlanner() {
   const loadSharedState = async ({ silent = false } = {}) => {
     if (!SHEET_STATE_API_URL) {
       if (!silent) setSharedSyncStatus("공유 URL이 설정되지 않았습니다.");
+      setSharedInitialLoading(false);
       return;
     }
 
@@ -2060,14 +2382,19 @@ export default function LostArkRaidPartyPlanner() {
       hasLoadedSharedStateRef.current = true;
     } catch (error) {
       setSharedSyncStatus(`불러오기 실패: ${error.message}`);
+    } finally {
+      setSharedInitialLoading(false);
     }
   };
 
-  const hasPendingManualChange = () => manualSwapMessage === "교환 임시 적용됨";
+  const hasPendingManualChange = () => {
+    if (manualSwapMessage !== "교환 임시 적용됨") return false;
 
-  const getCurrentFinalGroups = () => {
-    const calculatedGroups = applyManualSwapsToGroups(schedule.groups, manualSwaps);
-    return isValidSavedScheduleGroups(savedScheduleGroups) ? savedScheduleGroups : calculatedGroups;
+    // 자동 재편성 후 stale 메시지만 남아 있는 경우에는 저장을 막지 않는다.
+    if (manualSwaps.length > confirmedManualSwaps.length) return true;
+    if (savedScheduleGroupsBeforePending) return true;
+
+    return false;
   };
 
   const saveSharedState = async ({ silent = false } = {}) => {
@@ -2351,6 +2678,10 @@ export default function LostArkRaidPartyPlanner() {
     setManualSwaps([]);
     setConfirmedManualSwaps([]);
     setManualSwapMessage("");
+    setSavedScheduleGroups(null);
+    setSavedScheduleGroupsBeforePending(null);
+    setLastSyncedSavedScheduleGroups(null);
+    setSharedSyncStatus("자동 재편성됨 · 저장 버튼을 누르면 공유됩니다.");
   };
 
   const togglePartyDone = (partyDoneKey) => {
@@ -2378,23 +2709,12 @@ export default function LostArkRaidPartyPlanner() {
     [schedule.groups, manualSwaps]
   );
 
-  const isValidSavedScheduleGroups = (groups) => {
-    if (!Array.isArray(groups)) return false;
-    return groups.every(
-      (group) =>
-        group &&
-        group.raid &&
-        group.raid.key &&
-        Array.isArray(group.parties) &&
-        group.parties.every(
-          (party) => party && party.raid && party.raid.key && Array.isArray(party.slots)
-        )
-    );
-  };
-
-  const finalGroups = isValidSavedScheduleGroups(savedScheduleGroups)
-    ? savedScheduleGroups
-    : displayedGroups;
+  const finalGroups = (
+    hydrateSavedScheduleGroups(savedScheduleGroups) ??
+    (isValidScheduleGroups(savedScheduleGroups) ? savedScheduleGroups : displayedGroups)
+  )
+    .slice()
+    .sort((a, b) => getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid));
 
   const handleManualSwap = (fromRef, toRef) => {
     const baseGroups = savedScheduleGroups ?? displayedGroups;
@@ -2465,6 +2785,19 @@ export default function LostArkRaidPartyPlanner() {
       };
     })
     .filter((group) => group.parties.length > 0);
+
+  if (sharedInitialLoading) {
+    return (
+      <main style={styles.page}>
+        <div style={styles.container}>
+          <section style={styles.hero}>
+            <h1 style={styles.title}>Lost Ark Raid Planner</h1>
+            <p style={styles.desc}>공유 편성 데이터를 불러오는 중...</p>
+          </section>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main style={styles.page}>
@@ -2589,6 +2922,20 @@ export default function LostArkRaidPartyPlanner() {
             ))}
           </div>
         </section>
+
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button
+            type="button"
+            onClick={() => setShowRaidOverview((value) => !value)}
+            style={showRaidOverview ? styles.activeButton : styles.button}
+          >
+            레이드 현황 {showRaidOverview ? "닫기" : "한눈에 보기"}
+          </button>
+        </div>
+
+        {showRaidOverview && (
+          <RaidOverview groups={finalGroups} completedPartyKeys={completedPartyKeys} />
+        )}
 
         <section style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
           {visibleGroups.map((group) => {

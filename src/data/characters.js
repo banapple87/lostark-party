@@ -315,6 +315,15 @@ export const CHARACTERS = [
 
     {
         owner: "영수",
+        name: "맞딜해볼까",
+        className: "가디언나이트",
+        build: "업화의 계승자",
+        level: 1700,
+        power: 2000
+    },
+
+    {
+        owner: "영수",
         name: "영수디트1",
         className: "디스트로이어",
         build: "중력 수련",
