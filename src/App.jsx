@@ -2303,6 +2303,7 @@ export default function LostArkRaidPartyPlanner() {
   const [completedPartyKeys, setCompletedPartyKeys] = useState([]);
   const [savedScheduleGroups, setSavedScheduleGroups] = useState(null);
   const [showRaidOverview, setShowRaidOverview] = useState(false);
+  const [showFilterPanel, setShowFilterPanel] = useState(true);
   const [savedScheduleGroupsBeforePending, setSavedScheduleGroupsBeforePending] = useState(null);
   const [lastSyncedSavedScheduleGroups, setLastSyncedSavedScheduleGroups] = useState(null);
   const [seed, setSeed] = useState(0);
@@ -2870,6 +2871,19 @@ export default function LostArkRaidPartyPlanner() {
         </section>
 
         <section style={styles.raidSelectBox}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: showFilterPanel ? "8px" : 0 }}>
+            <strong style={{ fontSize: "13px" }}>필터 / 공유 설정</strong>
+            <button
+              type="button"
+              onClick={() => setShowFilterPanel((value) => !value)}
+              style={styles.miniButton}
+            >
+              {showFilterPanel ? "접기" : "열기"}
+            </button>
+          </div>
+
+          {showFilterPanel && (
+            <>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center", marginBottom: "8px" }}>
             <span style={{ ...styles.smallText, fontWeight: 900 }}>공유</span>
             <button
@@ -2944,6 +2958,8 @@ export default function LostArkRaidPartyPlanner() {
               </button>
             ))}
           </div>
+                    </>
+          )}
         </section>
 
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
