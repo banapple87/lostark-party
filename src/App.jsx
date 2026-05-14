@@ -2056,7 +2056,20 @@ export default function LostArkRaidPartyPlanner() {
     }
   };
 
+  const hasPendingManualChange = () => manualSwapMessage === "교환 임시 적용됨";
+
   const saveSharedState = async ({ silent = false } = {}) => {
+    if (hasPendingManualChange()) {
+      setSharedSyncStatus("저장 전 교환 완료를 눌러 검증해야 합니다.");
+      return;
+    }
+
+    const validationErrors = validateAllManualGroups(finalGroups, raidPreferences);
+    if (validationErrors.length > 0) {
+      setSharedSyncStatus(`저장 실패: ${validationErrors[0]}`);
+      return;
+    }
+
     if (!SHEET_STATE_API_URL) {
       if (!silent) setSharedSyncStatus("공유 URL이 설정되지 않았습니다.");
       return;
@@ -2131,13 +2144,6 @@ export default function LostArkRaidPartyPlanner() {
       })
       .sort((a, b) => b.level - a.level || b.power - a.power);
   }, [query, schedule.characterRuns]);
-
-  const displayedGroups = useMemo(
-    () => applyManualSwapsToGroups(schedule.groups, manualSwaps),
-    [schedule.groups, manualSwaps]
-  );
-
-  const finalGroups = savedScheduleGroups ?? displayedGroups;
 
   const currentPartyKeys = useMemo(
     () => finalGroups.flatMap((group) => group.parties.map((party) => getPartyDoneKey(party))),
@@ -2329,6 +2335,13 @@ export default function LostArkRaidPartyPlanner() {
     );
   };
 
+  const displayedGroups = useMemo(
+    () => applyManualSwapsToGroups(schedule.groups, manualSwaps),
+    [schedule.groups, manualSwaps]
+  );
+
+  const finalGroups = savedScheduleGroups ?? displayedGroups;
+
   const handleManualSwap = (fromRef, toRef) => {
     const baseGroups = savedScheduleGroups ?? displayedGroups;
     const error = validateManualSwap(baseGroups, fromRef, toRef);
@@ -2450,7 +2463,12 @@ export default function LostArkRaidPartyPlanner() {
             <button type="button" onClick={() => loadSharedState()} style={styles.miniButton}>
               불러오기
             </button>
-            <button type="button" onClick={() => saveSharedState()} style={styles.miniButton}>
+            <button
+              type="button"
+              onClick={() => saveSharedState()}
+              style={hasPendingManualChange() ? styles.miniButton : styles.miniActiveButton}
+              title={hasPendingManualChange() ? "교환 완료 후 저장할 수 있습니다" : "현재 편성을 공유 상태로 저장"}
+            >
               저장
             </button>
             <span style={{ ...styles.smallText }}>{sharedSyncStatus}</span>
