@@ -2239,7 +2239,7 @@ function PartyCard({
       </div>
 
       {isEightRaid ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(360px, 100%), 1fr))", gap: "10px", padding: "10px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(520px, 100%), 1fr))", gap: "14px", padding: "16px" }}>
           {slotGroups.map((group) => {
             const groupSlots = party.slots.filter((slot) => slot.group === group);
             const groupMembers = getMembersInGroup(party, group);
@@ -3050,7 +3050,7 @@ export default function LostArkRaidPartyPlanner() {
                       gridTemplateColumns:
                         group.raid.partySize === 8
                           ? "1fr"
-                          : "repeat(auto-fit, minmax(min(420px, 100%), 1fr))",
+                          : "repeat(auto-fit, minmax(min(520px, 100%), 1fr))",
                       gap: "8px",
                       alignItems: "start",
                     }}
