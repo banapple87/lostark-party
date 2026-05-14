@@ -197,6 +197,9 @@ const styles = {
   smallText: {
     color: "#64748b",
     fontSize: "11px",
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
   },
   partyHeader: {
     padding: "10px 12px",
@@ -241,6 +244,9 @@ const styles = {
   charName: {
     fontWeight: 900,
     marginBottom: "4px",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
   },
   badgeWrap: {
     display: "flex",
@@ -2233,7 +2239,7 @@ function PartyCard({
       </div>
 
       {isEightRaid ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(520px, 1fr))", gap: "14px", padding: "16px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(360px, 100%), 1fr))", gap: "10px", padding: "10px" }}>
           {slotGroups.map((group) => {
             const groupSlots = party.slots.filter((slot) => slot.group === group);
             const groupMembers = getMembersInGroup(party, group);
@@ -3044,7 +3050,7 @@ export default function LostArkRaidPartyPlanner() {
                       gridTemplateColumns:
                         group.raid.partySize === 8
                           ? "1fr"
-                          : "repeat(auto-fit, minmax(520px, 1fr))",
+                          : "repeat(auto-fit, minmax(min(420px, 100%), 1fr))",
                       gap: "8px",
                       alignItems: "start",
                     }}
