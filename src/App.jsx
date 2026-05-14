@@ -2290,6 +2290,7 @@ export default function LostArkRaidPartyPlanner() {
   const [confirmedManualSwaps, setConfirmedManualSwaps] = useState([]);
   const [draggingRef, setDraggingRef] = useState(null);
   const [manualSwapMessage, setManualSwapMessage] = useState("");
+  const [manualEditPending, setManualEditPending] = useState(false);
   const [completedPartyKeys, setCompletedPartyKeys] = useState([]);
   const [savedScheduleGroups, setSavedScheduleGroups] = useState(null);
   const [showRaidOverview, setShowRaidOverview] = useState(false);
@@ -2388,13 +2389,12 @@ export default function LostArkRaidPartyPlanner() {
   };
 
   const hasPendingManualChange = () => {
-    if (manualSwapMessage !== "교환 임시 적용됨") return false;
-
-    // 자동 재편성 후 stale 메시지만 남아 있는 경우에는 저장을 막지 않는다.
-    if (manualSwaps.length > confirmedManualSwaps.length) return true;
-    if (savedScheduleGroupsBeforePending) return true;
-
-    return false;
+    return (
+      manualEditPending ||
+      manualSwapMessage === "교환 임시 적용됨" ||
+      manualSwaps.length > confirmedManualSwaps.length ||
+      Boolean(savedScheduleGroupsBeforePending)
+    );
   };
 
   const saveSharedState = async ({ silent = false } = {}) => {
@@ -2668,16 +2668,17 @@ export default function LostArkRaidPartyPlanner() {
   };
 
   const clearManualMessage = () => {
+    // 임시 교환 상태에서는 메시지를 눌러도 검증 대기 상태를 지우지 않는다.
+    // 반드시 '교환 완료'로 검증을 통과하거나 실패 복구를 해야 저장 가능하다.
+    if (manualEditPending) return;
     if (manualSwapMessage) setManualSwapMessage("");
-    setSavedScheduleGroups(null);
-    setSavedScheduleGroupsBeforePending(null);
-    setLastSyncedSavedScheduleGroups(null);
   };
 
   const clearManualSwapsForAutoRebuild = () => {
     setManualSwaps([]);
     setConfirmedManualSwaps([]);
     setManualSwapMessage("");
+    setManualEditPending(false);
     setSavedScheduleGroups(null);
     setSavedScheduleGroupsBeforePending(null);
     setLastSyncedSavedScheduleGroups(null);
@@ -2724,11 +2725,17 @@ export default function LostArkRaidPartyPlanner() {
       return;
     }
 
+    setManualEditPending(true);
+
     // 저장된 최종 편성을 불러온 상태라면, 자동 재계산 결과가 아니라
     // 저장된 최종 편성 자체에 바로 이동/교환을 적용한다.
     if (savedScheduleGroups) {
-      if (manualSwapMessage !== "교환 임시 적용됨") {
-        setSavedScheduleGroupsBeforePending(savedScheduleGroups);
+      if (!savedScheduleGroupsBeforePending) {
+        setSavedScheduleGroupsBeforePending(
+          isValidScheduleGroups(lastSyncedSavedScheduleGroups)
+            ? lastSyncedSavedScheduleGroups
+            : savedScheduleGroups
+        );
       }
 
       setSavedScheduleGroups((prev) => applyManualSwapsToGroups(prev, [{ from: fromRef, to: toRef }]));
@@ -2746,15 +2753,21 @@ export default function LostArkRaidPartyPlanner() {
 
     if (errors.length > 0) {
       if (savedScheduleGroups) {
-        if (savedScheduleGroupsBeforePending) {
-          setSavedScheduleGroups(savedScheduleGroupsBeforePending);
-          setSavedScheduleGroupsBeforePending(null);
+        const rollbackGroups = isValidScheduleGroups(lastSyncedSavedScheduleGroups)
+          ? lastSyncedSavedScheduleGroups
+          : savedScheduleGroupsBeforePending;
+
+        if (rollbackGroups) {
+          setSavedScheduleGroups(rollbackGroups);
         }
-        setManualSwapMessage(`조건 불일치로 교환 전 상태로 되돌렸습니다: ${errors[0]}`);
+        setSavedScheduleGroupsBeforePending(null);
+        setManualEditPending(false);
+        setManualSwapMessage(`조건 불일치로 저장된 최종 편성 상태로 되돌렸습니다: ${errors[0]}`);
         return;
       }
 
       setManualSwaps(confirmedManualSwaps);
+      setManualEditPending(false);
       setManualSwapMessage(`조건 불일치로 이전 완료 상태로 되돌렸습니다: ${errors[0]}`);
       return;
     }
@@ -2763,6 +2776,7 @@ export default function LostArkRaidPartyPlanner() {
       setConfirmedManualSwaps(manualSwaps);
     }
     setSavedScheduleGroupsBeforePending(null);
+    setManualEditPending(false);
     setManualSwapMessage("교환 완료");
   };
 
@@ -2875,7 +2889,7 @@ export default function LostArkRaidPartyPlanner() {
             <span style={{ ...styles.smallText }}>
               같은 레이드 안에서 카드끼리 자유 교환 후, 교환 완료를 눌러 조건을 검증합니다.
             </span>
-            {manualSwaps.length > 0 && (
+            {hasPendingManualChange() && (
               <button type="button" onClick={completeManualSwaps} style={styles.miniActiveButton}>
                 교환 완료
               </button>
