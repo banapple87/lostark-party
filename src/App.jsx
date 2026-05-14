@@ -1956,14 +1956,14 @@ function EmptySlot({ role, slotGroup, dragRef, onDropCharacter }) {
 
 function getOwnerColorStyle(owner) {
   const preferredOwnerColorOrder = [
-    "재진",
-    "강찬",
-    "준형",
-    "준혁",
-    "혜연",
-    "영수",
     "찬범",
+    "준형",
+    "강찬",
     "혁준",
+    "혜연",
+    "준혁",
+    "재진",
+    "영수",
   ];
 
   const allOwners = [...new Set(CHARACTERS.map((character) => character.owner))];
