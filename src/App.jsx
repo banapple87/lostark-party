@@ -2951,7 +2951,24 @@ export default function LostArkRaidPartyPlanner() {
         </div>
 
         {showRaidOverview && (
-          <RaidOverview groups={finalGroups} completedPartyKeys={completedPartyKeys} />
+          <RaidOverview
+            groups={finalGroups
+              .filter((group) => activeRaidFilters.includes(group.raid.key))
+              .map((group) => ({
+                ...group,
+                parties: group.parties.filter((party) => {
+                  const partyOwners = new Set(getPartyMembers(party).map((member) => member.owner));
+
+                  for (const owner of partyOwners) {
+                    if (!activeOwnerFilters.includes(owner)) return false;
+                  }
+
+                  return true;
+                }),
+              }))
+              .filter((group) => group.parties.length > 0)}
+            completedPartyKeys={completedPartyKeys}
+          />
         )}
 
         <section style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
