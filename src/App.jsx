@@ -205,13 +205,13 @@ const styles = {
   },
   memberGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(220px, 1fr))",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
     gap: "8px",
     padding: "10px",
   },
   raidSubPartyMemberGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(220px, 1fr))",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
     gap: "8px",
     padding: "10px",
   },
@@ -221,6 +221,7 @@ const styles = {
     padding: "9px",
     background: "#ffffff",
     boxShadow: "none",
+    minWidth: 0,
   },
   emptySlot: {
     border: "1px dashed #d1d5db",
@@ -229,6 +230,7 @@ const styles = {
     background: "#f9fafb",
     color: "#9ca3af",
     minHeight: "78px",
+    minWidth: 0,
     display: "flex",
     flexDirection: "column",
     justifyContent: "center",
@@ -284,11 +286,12 @@ const styles = {
   },
   splitGrid: {
     display: "grid",
-    gridTemplateColumns: "minmax(0, 2fr) minmax(320px, 1fr)",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(420px, 100%), 1fr))",
     gap: "18px",
   },
   input: {
     width: "100%",
+    minWidth: 0,
     border: "1px solid #d1d5db",
     borderRadius: "10px",
     padding: "10px 12px",
@@ -308,13 +311,13 @@ const styles = {
   },
   overviewGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(360px, 360px))",
+    gridTemplateColumns: "repeat(auto-fill, minmax(min(360px, 100%), 360px))",
     gap: "10px",
     justifyContent: "start",
   },
   overviewGridWide: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(360px, 360px))",
+    gridTemplateColumns: "repeat(auto-fill, minmax(min(360px, 100%), 360px))",
     gap: "10px",
     justifyContent: "start",
   },
