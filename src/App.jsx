@@ -44,7 +44,7 @@ const RAID_FAMILIES = [
 
 // Google Apps Script 웹앱 URL을 여기에 넣으면 공유 상태 저장/불러오기가 동작한다.
 // 예: https://script.google.com/macros/s/xxxx/exec
-const SHEET_STATE_API_URL = import.meta.env.VITE_SHEET_STATE_API_URL ?? "";
+const SHEET_STATE_API_URL = "https://script.google.com/macros/s/AKfycbwmCdm0iY4EXs96avcrrLUCh6B9sfpSlua6G5D2Eb-ebvEQQYduJAJmQpBnWW8FzPbYQA/exec";
 
 const SHARED_STATE_VERSION = 1;
 
@@ -601,6 +601,110 @@ function summarizeParty(party) {
     dpsCount: roles.DPS ?? 0,
     synergyCounts,
   };
+}
+
+function getDpsMembersFromParty(party) {
+  return getPartyMembers(party).filter((member) => getClassMeta(member).role !== "SUPPORT");
+}
+
+function getPartyDpsAvgPower(party) {
+  const dpsMembers = getDpsMembersFromParty(party);
+  if (!dpsMembers.length) return 0;
+
+  return Math.round(
+    dpsMembers.reduce((sum, member) => sum + getEffectivePower(member), 0) / dpsMembers.length
+  );
+}
+
+function getRaidDpsSpread(raidGroup) {
+  const averages = raidGroup.parties
+    .map(getPartyDpsAvgPower)
+    .filter((value) => value > 0);
+
+  if (averages.length <= 1) return 0;
+  return Math.max(...averages) - Math.min(...averages);
+}
+
+function canSwapExactSlots(partyA, slotA, partyB, slotB) {
+  if (!slotA.member || !slotB.member) return false;
+  if (slotA.role !== "DPS" || slotB.role !== "DPS") return false;
+
+  const memberA = slotA.member;
+  const memberB = slotB.member;
+
+  slotA.member = memberB;
+  slotB.member = memberA;
+  rebuildSynergyCounts(partyA);
+  rebuildSynergyCounts(partyB);
+
+  const valid = isPartyValidByOwnerAndClass(partyA) && isPartyValidByOwnerAndClass(partyB);
+
+  slotA.member = memberA;
+  slotB.member = memberB;
+  rebuildSynergyCounts(partyA);
+  rebuildSynergyCounts(partyB);
+
+  return valid;
+}
+
+function balanceRaidDpsPower(raidGroup) {
+  // 같은 레이드 안에서 DPS끼리만 교환해서 딜러 평균 전투력 차이를 줄인다.
+  // 서포터는 전투력 밸런싱 대상에서 제외한다.
+  let improved = true;
+  let loopGuard = 0;
+
+  while (improved && loopGuard < 80) {
+    improved = false;
+    loopGuard += 1;
+
+    const currentSpread = getRaidDpsSpread(raidGroup);
+    let bestSwap = null;
+
+    for (let i = 0; i < raidGroup.parties.length; i += 1) {
+      for (let j = i + 1; j < raidGroup.parties.length; j += 1) {
+        const partyA = raidGroup.parties[i];
+        const partyB = raidGroup.parties[j];
+
+        for (const slotA of partyA.slots) {
+          if (!slotA.member || slotA.role !== "DPS") continue;
+
+          for (const slotB of partyB.slots) {
+            if (!slotB.member || slotB.role !== "DPS") continue;
+            if (!canSwapExactSlots(partyA, slotA, partyB, slotB)) continue;
+
+            const originalA = slotA.member;
+            const originalB = slotB.member;
+
+            slotA.member = originalB;
+            slotB.member = originalA;
+            rebuildSynergyCounts(partyA);
+            rebuildSynergyCounts(partyB);
+
+            const nextSpread = getRaidDpsSpread(raidGroup);
+            const improvement = currentSpread - nextSpread;
+
+            slotA.member = originalA;
+            slotB.member = originalB;
+            rebuildSynergyCounts(partyA);
+            rebuildSynergyCounts(partyB);
+
+            if (improvement > 0 && (!bestSwap || improvement > bestSwap.improvement)) {
+              bestSwap = { partyA, partyB, slotA, slotB, improvement };
+            }
+          }
+        }
+      }
+    }
+
+    if (bestSwap) {
+      const temp = bestSwap.slotA.member;
+      bestSwap.slotA.member = bestSwap.slotB.member;
+      bestSwap.slotB.member = temp;
+      rebuildSynergyCounts(bestSwap.partyA);
+      rebuildSynergyCounts(bestSwap.partyB);
+      improved = true;
+    }
+  }
 }
 
 function SynergyBadges({ synergyCounts }) {
@@ -1305,6 +1409,8 @@ function compactRaidGroup(raidGroup, targetAvgPower) {
 
   pullForwardToFillEmptySlots(raidGroup);
   normalizeRaidGroupSlots(raidGroup);
+  balanceRaidDpsPower(raidGroup);
+  normalizeRaidGroupSlots(raidGroup);
 
   raidGroup.parties.forEach((party, index) => {
     party.id = `${raidGroup.raid.key}-${index + 1}`;
@@ -1444,7 +1550,7 @@ function generateSchedule({ selectedRaidKeys, roleOverrides, ownerToggles, reser
 
   const raidSpreads = groups.map((group) => {
     const partyAverages = group.parties
-      .map((party) => summarizeParty(party).avgPower)
+      .map(getPartyDpsAvgPower)
       .filter((value) => value > 0);
     const minAvg = partyAverages.length ? Math.min(...partyAverages) : 0;
     const maxAvg = partyAverages.length ? Math.max(...partyAverages) : 0;
@@ -1875,6 +1981,7 @@ export default function LostArkRaidPartyPlanner() {
   const [draggingRef, setDraggingRef] = useState(null);
   const [manualSwapMessage, setManualSwapMessage] = useState("");
   const [completedPartyKeys, setCompletedPartyKeys] = useState([]);
+  const [savedScheduleGroups, setSavedScheduleGroups] = useState(null);
   const [seed, setSeed] = useState(0);
   const [sharedSyncEnabled, setSharedSyncEnabled] = useState(true);
   const [sharedSyncStatus, setSharedSyncStatus] = useState(
@@ -1894,6 +2001,7 @@ export default function LostArkRaidPartyPlanner() {
     manualSwaps,
     confirmedManualSwaps,
     completedPartyKeys,
+    savedScheduleGroups: finalGroups,
   });
 
   const applySharedState = (state) => {
@@ -1907,6 +2015,7 @@ export default function LostArkRaidPartyPlanner() {
     setManualSwaps(state.manualSwaps ?? []);
     setConfirmedManualSwaps(state.confirmedManualSwaps ?? []);
     setCompletedPartyKeys(state.completedPartyKeys ?? []);
+    setSavedScheduleGroups(state.savedScheduleGroups ?? null);
 
     window.setTimeout(() => {
       isApplyingSharedStateRef.current = false;
@@ -2023,9 +2132,16 @@ export default function LostArkRaidPartyPlanner() {
       .sort((a, b) => b.level - a.level || b.power - a.power);
   }, [query, schedule.characterRuns]);
 
+  const displayedGroups = useMemo(
+    () => applyManualSwapsToGroups(schedule.groups, manualSwaps),
+    [schedule.groups, manualSwaps]
+  );
+
+  const finalGroups = savedScheduleGroups ?? displayedGroups;
+
   const currentPartyKeys = useMemo(
-    () => schedule.groups.flatMap((group) => group.parties.map((party) => getPartyDoneKey(party))),
-    [schedule.groups]
+    () => finalGroups.flatMap((group) => group.parties.map((party) => getPartyDoneKey(party))),
+    [finalGroups]
   );
 
   const completedGeneratedPartyCount = currentPartyKeys.filter((key) =>
@@ -2075,6 +2191,7 @@ export default function LostArkRaidPartyPlanner() {
   }, [schedule]);
 
   const changeValkyrieRole = (raidKey, character, role) => {
+    clearManualSwapsForAutoRebuild();
     setRoleOverrides((prev) => ({
       ...prev,
       [getRoleOverrideKey(raidKey, character)]: role,
@@ -2082,6 +2199,7 @@ export default function LostArkRaidPartyPlanner() {
   };
 
   const changeRaidPreference = (character, family) => {
+    clearManualSwapsForAutoRebuild();
     setRaidPreferences((prev) => {
       const availableRaids = getAvailableRaidsForFamily(character, family);
       if (!availableRaids.length) return prev;
@@ -2153,6 +2271,7 @@ export default function LostArkRaidPartyPlanner() {
   };
 
   const changeReserveCountForRaid = (raid, delta) => {
+    clearManualSwapsForAutoRebuild();
     const maxCount = CHARACTERS.filter(
       (character) =>
         character.reserve &&
@@ -2171,6 +2290,7 @@ export default function LostArkRaidPartyPlanner() {
   };
 
   const toggleOwnerForRaid = (raidKey, owner) => {
+    clearManualSwapsForAutoRebuild();
     const key = getOwnerToggleKey(raidKey, owner);
     setOwnerToggles((prev) => ({
       ...prev,
@@ -2180,6 +2300,13 @@ export default function LostArkRaidPartyPlanner() {
 
   const clearManualMessage = () => {
     if (manualSwapMessage) setManualSwapMessage("");
+    setSavedScheduleGroups(null);
+  };
+
+  const clearManualSwapsForAutoRebuild = () => {
+    setManualSwaps([]);
+    setConfirmedManualSwaps([]);
+    setManualSwapMessage("");
   };
 
   const togglePartyDone = (partyDoneKey) => {
@@ -2202,15 +2329,19 @@ export default function LostArkRaidPartyPlanner() {
     );
   };
 
-  const displayedGroups = useMemo(
-    () => applyManualSwapsToGroups(schedule.groups, manualSwaps),
-    [schedule.groups, manualSwaps]
-  );
-
   const handleManualSwap = (fromRef, toRef) => {
-    const error = validateManualSwap(displayedGroups, fromRef, toRef);
+    const baseGroups = savedScheduleGroups ?? displayedGroups;
+    const error = validateManualSwap(baseGroups, fromRef, toRef);
     if (error) {
       setManualSwapMessage(error);
+      return;
+    }
+
+    // 저장된 최종 편성을 불러온 상태라면, 자동 재계산 결과가 아니라
+    // 저장된 최종 편성 자체에 바로 이동/교환을 적용한다.
+    if (savedScheduleGroups) {
+      setSavedScheduleGroups((prev) => applyManualSwapsToGroups(prev, [{ from: fromRef, to: toRef }]));
+      setManualSwapMessage("교환 임시 적용됨");
       return;
     }
 
@@ -2219,19 +2350,27 @@ export default function LostArkRaidPartyPlanner() {
   };
 
   const completeManualSwaps = () => {
-    const errors = validateAllManualGroups(displayedGroups, raidPreferences);
+    const groupsToValidate = savedScheduleGroups ?? displayedGroups;
+    const errors = validateAllManualGroups(groupsToValidate, raidPreferences);
 
     if (errors.length > 0) {
+      if (savedScheduleGroups) {
+        setManualSwapMessage(`조건 불일치: ${errors[0]}`);
+        return;
+      }
+
       setManualSwaps(confirmedManualSwaps);
       setManualSwapMessage(`조건 불일치로 이전 완료 상태로 되돌렸습니다: ${errors[0]}`);
       return;
     }
 
-    setConfirmedManualSwaps(manualSwaps);
+    if (!savedScheduleGroups) {
+      setConfirmedManualSwaps(manualSwaps);
+    }
     setManualSwapMessage("교환 완료");
   };
 
-  const visibleGroups = displayedGroups
+  const visibleGroups = finalGroups
     .filter((group) => activeRaidFilters.includes(group.raid.key))
     .map((group) => {
       const visibleParties = group.parties.filter((party) => {
