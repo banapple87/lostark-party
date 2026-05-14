@@ -1982,6 +1982,8 @@ export default function LostArkRaidPartyPlanner() {
   const [manualSwapMessage, setManualSwapMessage] = useState("");
   const [completedPartyKeys, setCompletedPartyKeys] = useState([]);
   const [savedScheduleGroups, setSavedScheduleGroups] = useState(null);
+  const [savedScheduleGroupsBeforePending, setSavedScheduleGroupsBeforePending] = useState(null);
+  const [lastSyncedSavedScheduleGroups, setLastSyncedSavedScheduleGroups] = useState(null);
   const [seed, setSeed] = useState(0);
   const [sharedSyncEnabled, setSharedSyncEnabled] = useState(true);
   const [sharedSyncStatus, setSharedSyncStatus] = useState(
@@ -2001,7 +2003,7 @@ export default function LostArkRaidPartyPlanner() {
     manualSwaps,
     confirmedManualSwaps,
     completedPartyKeys,
-    savedScheduleGroups: finalGroups,
+    savedScheduleGroups: getCurrentFinalGroups(),
   });
 
   const applySharedState = (state) => {
@@ -2015,7 +2017,12 @@ export default function LostArkRaidPartyPlanner() {
     setManualSwaps(state.manualSwaps ?? []);
     setConfirmedManualSwaps(state.confirmedManualSwaps ?? []);
     setCompletedPartyKeys(state.completedPartyKeys ?? []);
-    setSavedScheduleGroups(state.savedScheduleGroups ?? null);
+    const loadedSavedGroups = isValidSavedScheduleGroups(state.savedScheduleGroups)
+      ? state.savedScheduleGroups
+      : null;
+    setSavedScheduleGroups(loadedSavedGroups);
+    setLastSyncedSavedScheduleGroups(loadedSavedGroups);
+    setSavedScheduleGroupsBeforePending(null);
 
     window.setTimeout(() => {
       isApplyingSharedStateRef.current = false;
@@ -2058,13 +2065,19 @@ export default function LostArkRaidPartyPlanner() {
 
   const hasPendingManualChange = () => manualSwapMessage === "교환 임시 적용됨";
 
+  const getCurrentFinalGroups = () => {
+    const calculatedGroups = applyManualSwapsToGroups(schedule.groups, manualSwaps);
+    return isValidSavedScheduleGroups(savedScheduleGroups) ? savedScheduleGroups : calculatedGroups;
+  };
+
   const saveSharedState = async ({ silent = false } = {}) => {
     if (hasPendingManualChange()) {
       setSharedSyncStatus("저장 전 교환 완료를 눌러 검증해야 합니다.");
       return;
     }
 
-    const validationErrors = validateAllManualGroups(finalGroups, raidPreferences);
+    const groupsToSave = getCurrentFinalGroups();
+    const validationErrors = validateAllManualGroups(groupsToSave, raidPreferences);
     if (validationErrors.length > 0) {
       setSharedSyncStatus(`저장 실패: ${validationErrors[0]}`);
       return;
@@ -2095,6 +2108,8 @@ export default function LostArkRaidPartyPlanner() {
       }
 
       lastSavedSharedStateRef.current = serialized;
+      setLastSyncedSavedScheduleGroups(groupsToSave);
+      setSavedScheduleGroupsBeforePending(null);
       setSharedSyncStatus(`공유 상태 저장됨 ${new Date().toLocaleTimeString()}`);
     } catch (error) {
       setSharedSyncStatus(`저장 실패: ${error.message}`);
@@ -2146,8 +2161,29 @@ export default function LostArkRaidPartyPlanner() {
   }, [query, schedule.characterRuns]);
 
   const currentPartyKeys = useMemo(
-    () => finalGroups.flatMap((group) => group.parties.map((party) => getPartyDoneKey(party))),
-    [finalGroups]
+    () => {
+      const hasValidSavedGroups =
+        Array.isArray(savedScheduleGroups) &&
+        savedScheduleGroups.every(
+          (group) =>
+            group &&
+            group.raid &&
+            group.raid.key &&
+            Array.isArray(group.parties) &&
+            group.parties.every(
+              (party) => party && party.raid && party.raid.key && Array.isArray(party.slots)
+            )
+        );
+
+      const groupsForCount = hasValidSavedGroups
+        ? savedScheduleGroups
+        : applyManualSwapsToGroups(schedule.groups, manualSwaps);
+
+      return groupsForCount.flatMap((group) =>
+        group.parties.map((party) => getPartyDoneKey(party))
+      );
+    },
+    [savedScheduleGroups, schedule.groups, manualSwaps]
   );
 
   const completedGeneratedPartyCount = currentPartyKeys.filter((key) =>
@@ -2307,6 +2343,8 @@ export default function LostArkRaidPartyPlanner() {
   const clearManualMessage = () => {
     if (manualSwapMessage) setManualSwapMessage("");
     setSavedScheduleGroups(null);
+    setSavedScheduleGroupsBeforePending(null);
+    setLastSyncedSavedScheduleGroups(null);
   };
 
   const clearManualSwapsForAutoRebuild = () => {
@@ -2340,7 +2378,23 @@ export default function LostArkRaidPartyPlanner() {
     [schedule.groups, manualSwaps]
   );
 
-  const finalGroups = savedScheduleGroups ?? displayedGroups;
+  const isValidSavedScheduleGroups = (groups) => {
+    if (!Array.isArray(groups)) return false;
+    return groups.every(
+      (group) =>
+        group &&
+        group.raid &&
+        group.raid.key &&
+        Array.isArray(group.parties) &&
+        group.parties.every(
+          (party) => party && party.raid && party.raid.key && Array.isArray(party.slots)
+        )
+    );
+  };
+
+  const finalGroups = isValidSavedScheduleGroups(savedScheduleGroups)
+    ? savedScheduleGroups
+    : displayedGroups;
 
   const handleManualSwap = (fromRef, toRef) => {
     const baseGroups = savedScheduleGroups ?? displayedGroups;
@@ -2353,6 +2407,10 @@ export default function LostArkRaidPartyPlanner() {
     // 저장된 최종 편성을 불러온 상태라면, 자동 재계산 결과가 아니라
     // 저장된 최종 편성 자체에 바로 이동/교환을 적용한다.
     if (savedScheduleGroups) {
+      if (manualSwapMessage !== "교환 임시 적용됨") {
+        setSavedScheduleGroupsBeforePending(savedScheduleGroups);
+      }
+
       setSavedScheduleGroups((prev) => applyManualSwapsToGroups(prev, [{ from: fromRef, to: toRef }]));
       setManualSwapMessage("교환 임시 적용됨");
       return;
@@ -2368,7 +2426,11 @@ export default function LostArkRaidPartyPlanner() {
 
     if (errors.length > 0) {
       if (savedScheduleGroups) {
-        setManualSwapMessage(`조건 불일치: ${errors[0]}`);
+        if (savedScheduleGroupsBeforePending) {
+          setSavedScheduleGroups(savedScheduleGroupsBeforePending);
+          setSavedScheduleGroupsBeforePending(null);
+        }
+        setManualSwapMessage(`조건 불일치로 교환 전 상태로 되돌렸습니다: ${errors[0]}`);
         return;
       }
 
@@ -2380,6 +2442,7 @@ export default function LostArkRaidPartyPlanner() {
     if (!savedScheduleGroups) {
       setConfirmedManualSwaps(manualSwaps);
     }
+    setSavedScheduleGroupsBeforePending(null);
     setManualSwapMessage("교환 완료");
   };
 
