@@ -292,7 +292,7 @@ const styles = {
   },
   splitGrid: {
     display: "grid",
-    gridTemplateColumns: "minmax(0, 1.45fr) minmax(320px, 0.55fr)",
+    gridTemplateColumns: "minmax(min(720px, 100%), 1.45fr) minmax(min(320px, 100%), 0.55fr)",
     gap: "18px",
     alignItems: "start",
   },
@@ -783,17 +783,49 @@ function balanceRaidDpsPower(raidGroup) {
 }
 
 function SynergyBadges({ synergyCounts }) {
-  const entries = Object.entries(synergyCounts ?? {});
+  const entries = Object.entries(synergyCounts ?? {}).filter(([, count]) => count > 0);
+  if (!entries.length) return null;
 
-  if (!entries.length) {
-    return <Badge>시너지 없음</Badge>;
-  }
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: "4px",
+        alignItems: "center",
+        justifyContent: "flex-end",
+      }}
+    >
+      {entries.map(([synergy, count]) => {
+        const isDuplicate = count > 1;
 
-  return entries.map(([synergy, count]) => (
-    <Badge key={synergy} tone={count > 1 && synergy !== "서폿" ? "warn" : "default"}>
-      {synergy} {count > 1 ? `x${count}` : ""}
-    </Badge>
-  ));
+        return (
+          <span
+            key={synergy}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              height: "24px",
+              padding: "0 9px",
+              border: isDuplicate ? "1px solid #f59e0b" : "1px solid #e5e7eb",
+              background: isDuplicate ? "#fffbeb" : "#ffffff",
+              color: isDuplicate ? "#92400e" : "#374151",
+              borderRadius: "999px",
+              fontSize: "11px",
+              fontWeight: 850,
+              lineHeight: 1,
+              whiteSpace: "nowrap",
+              boxSizing: "border-box",
+            }}
+          >
+            {synergy}
+            {isDuplicate ? ` ×${count}` : ""}
+          </span>
+        );
+      })}
+    </div>
+  );
 }
 
 function scorePartyForCharacter({ party, character, targetAvgPower }) {
@@ -2196,6 +2228,7 @@ function PartyCard({
   onDropCharacter,
   completedPartyKeys,
   onTogglePartyDone,
+  isNarrowScreen = false,
 }) {
   const summary = summarizeParty(party);
   const members = getPartyMembers(party);
@@ -2266,6 +2299,7 @@ function PartyCard({
           style={{
             display: "flex",
             justifyContent: "space-between",
+            alignItems: "center",
             gap: "8px",
             flexWrap: "wrap",
           }}
@@ -2290,7 +2324,7 @@ function PartyCard({
           </div>
 
           {!isEightRaid && (
-            <div style={styles.badgeWrap}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
               <SynergyBadges synergyCounts={summary.synergyCounts} />
             </div>
           )}
@@ -2298,7 +2332,7 @@ function PartyCard({
       </div>
 
       {isEightRaid ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(520px, 100%), 1fr))", gap: "14px", padding: "16px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(520px, 100%), 1fr))", gap: "14px", padding: isNarrowScreen ? "8px" : "16px" }}>
           {slotGroups.map((group) => {
             const groupSlots = party.slots.filter((slot) => slot.group === group);
             const groupMembers = getMembersInGroup(party, group);
@@ -2307,14 +2341,25 @@ function PartyCard({
             return (
               <div key={group} style={{ border: "1px solid #e2e8f0", borderRadius: "20px", overflow: "hidden", background: "#ffffff" }}>
                 <div style={{ padding: "12px 14px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                    <strong>{group === "A" ? "1파티" : "2파티"}</strong>
-                  </div>
-                  <div style={{ ...styles.smallText, marginTop: "6px" }}>
-                    평균 전투력 {groupSummary.avgPower}
-                  </div>
-                  <div style={{ ...styles.badgeWrap, marginTop: "8px" }}>
-                    <SynergyBadges synergyCounts={groupSummary.synergyCounts} />
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: "8px",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <div>
+                      <strong>{group === "A" ? "1파티" : "2파티"}</strong>
+                      <div style={{ ...styles.smallText, marginTop: "6px" }}>
+                        평균 전투력 {groupSummary.avgPower}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
+                      <SynergyBadges synergyCounts={groupSummary.synergyCounts} />
+                    </div>
                   </div>
                 </div>
                 {renderSlots(groupSlots, true)}
@@ -3241,6 +3286,7 @@ export default function LostArkRaidPartyPlanner() {
                         onDropCharacter={handleManualSwap}
                         completedPartyKeys={completedPartyKeys}
                         onTogglePartyDone={togglePartyDone}
+                        isNarrowScreen={isNarrowScreen}
                       />
                     ))}
                   </div>
@@ -3283,7 +3329,9 @@ export default function LostArkRaidPartyPlanner() {
         <section
           style={{
             ...styles.splitGrid,
-            gridTemplateColumns: isNarrowScreen ? "1fr" : styles.splitGrid.gridTemplateColumns,
+            gridTemplateColumns: isNarrowScreen
+              ? "minmax(0, 1fr)"
+              : styles.splitGrid.gridTemplateColumns,
           }}
         >
           <div style={styles.card}>
