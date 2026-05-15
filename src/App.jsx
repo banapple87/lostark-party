@@ -2365,6 +2365,7 @@ export default function LostArkRaidPartyPlanner() {
   const [showFilterPanel, setShowFilterPanel] = useState(true);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [partySearch, setPartySearch] = useState("");
+  const [isNarrowScreen, setIsNarrowScreen] = useState(() => window.innerWidth < 900);
   const [savedScheduleGroupsBeforePending, setSavedScheduleGroupsBeforePending] = useState(null);
   const [lastSyncedSavedScheduleGroups, setLastSyncedSavedScheduleGroups] = useState(null);
   const [seed, setSeed] = useState(0);
@@ -2516,6 +2517,13 @@ export default function LostArkRaidPartyPlanner() {
 
   useEffect(() => {
     loadSharedState({ silent: true });
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => setIsNarrowScreen(window.innerWidth < 900);
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
   }, []);
 
   useEffect(() => {
@@ -3272,7 +3280,12 @@ export default function LostArkRaidPartyPlanner() {
           </div>
         )}
 
-        <section style={styles.splitGrid}>
+        <section
+          style={{
+            ...styles.splitGrid,
+            gridTemplateColumns: isNarrowScreen ? "1fr" : styles.splitGrid.gridTemplateColumns,
+          }}
+        >
           <div style={styles.card}>
             <div style={styles.cardPad}>
               <div
