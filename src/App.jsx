@@ -292,17 +292,34 @@ const styles = {
   },
   splitGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(min(420px, 100%), 1fr))",
+    gridTemplateColumns: "minmax(0, 1.45fr) minmax(320px, 0.55fr)",
     gap: "18px",
+    alignItems: "start",
   },
   input: {
     width: "100%",
     minWidth: 0,
+    boxSizing: "border-box",
     border: "1px solid #d1d5db",
     borderRadius: "10px",
     padding: "10px 12px",
     outline: "none",
     fontWeight: 800,
+    background: "#ffffff",
+    boxShadow: "none",
+  },
+  miniInput: {
+    width: "240px",
+    maxWidth: "100%",
+    height: "28px",
+    minWidth: 0,
+    boxSizing: "border-box",
+    border: "1px solid #d1d5db",
+    borderRadius: "8px",
+    padding: "5px 10px",
+    outline: "none",
+    fontSize: "11px",
+    fontWeight: 850,
     background: "#ffffff",
     boxShadow: "none",
   },
@@ -1797,6 +1814,8 @@ function CharacterRow({
   showRaidPreferenceControls,
   raidPreferences,
   onChangeRaidPreference,
+  clearedRaidKeys = new Set(),
+  assignedRaidKeys = new Set(),
 }) {
   const meta = getClassMeta(character);
 
@@ -1872,15 +1891,12 @@ function CharacterRow({
         <Badge>Lv.{character.level}</Badge>
         <Badge tone="purple">전투력 {character.power}</Badge>
         {runCount !== null && runCount !== undefined && (
-          <Badge tone={runCount === 3 ? "good" : "warn"}>{runCount}/3회</Badge>
+          <Badge tone={runCount === 3 ? "good" : "warn"}>{runCount}회</Badge>
         )}
-        {(meta.synergies ?? []).map((synergy) => (
-          <Badge key={synergy}>{synergy}</Badge>
-        ))}
         {showRaidPreferenceControls && onChangeRaidPreference && (
           <div style={{ width: "100%", marginTop: "6px" }}>
             <div style={{ ...styles.smallText, fontWeight: 900, marginBottom: "4px" }}>
-              레이드 설정
+              레이드 클리어 상태 및 설정
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
               {RAID_FAMILIES.map((family) => {
@@ -1890,17 +1906,24 @@ function CharacterRow({
                   family,
                   raidPreferences ?? {}
                 );
-                const disabled = availableRaids.length === 0;
+                if (availableRaids.length === 0) return null;
+                const disabled = false;
                 const isForced = selectedRaid
                   ? getRaidPreference(raidPreferences ?? {}, character, selectedRaid.key) === "FORCE"
                   : false;
                 const isExcluded = isRaidFamilyExcluded(character, family, raidPreferences ?? {});
+                const isSelectedRaidCleared = selectedRaid
+                  ? clearedRaidKeys.has(selectedRaid.key)
+                  : false;
+                const isSelectedRaidUnassigned = selectedRaid
+                  ? !assignedRaidKeys.has(selectedRaid.key)
+                  : isExcluded;
 
                 return (
                   <button
                     key={`${getCharacterId(character)}-${family.id}`}
                     type="button"
-                    disabled={disabled}
+                    
                     onClick={() => onChangeRaidPreference(character, family)}
                     title={
                       disabled
@@ -1909,12 +1932,48 @@ function CharacterRow({
                     }
                     style={{
                       ...styles.miniButton,
+                      position: "relative",
                       ...(isForced ? styles.goodBadge : {}),
                       ...(isExcluded ? styles.warnBadge : {}),
-                      opacity: disabled ? 0.45 : 1,
+                      opacity: isSelectedRaidCleared ? 0.45 : 1,
                     }}
                   >
-                    {getRaidFamilyButtonText(character, family, raidPreferences ?? {})}
+                    {isSelectedRaidUnassigned && (
+                        <span
+                          style={{
+                            position: "absolute",
+                            inset: "2px",
+                            pointerEvents: "none",
+                            opacity: 0.85,
+                          }}
+                        >
+                          <span
+                            style={{
+                              position: "absolute",
+                              left: 0,
+                              top: "50%",
+                              width: "100%",
+                              height: "1.5px",
+                              background: "#dc2626",
+                              transform: "rotate(18deg)",
+                              transformOrigin: "center",
+                            }}
+                          />
+                          <span
+                            style={{
+                              position: "absolute",
+                              left: 0,
+                              top: "50%",
+                              width: "100%",
+                              height: "1.5px",
+                              background: "#dc2626",
+                              transform: "rotate(-18deg)",
+                              transformOrigin: "center",
+                            }}
+                          />
+                        </span>
+                      )}
+                      {getRaidFamilyButtonText(character, family, raidPreferences ?? {})}
                   </button>
                 );
               })}
@@ -2304,6 +2363,8 @@ export default function LostArkRaidPartyPlanner() {
   const [savedScheduleGroups, setSavedScheduleGroups] = useState(null);
   const [showRaidOverview, setShowRaidOverview] = useState(false);
   const [showFilterPanel, setShowFilterPanel] = useState(true);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [partySearch, setPartySearch] = useState("");
   const [savedScheduleGroupsBeforePending, setSavedScheduleGroupsBeforePending] = useState(null);
   const [lastSyncedSavedScheduleGroups, setLastSyncedSavedScheduleGroups] = useState(null);
   const [seed, setSeed] = useState(0);
@@ -2484,12 +2545,56 @@ export default function LostArkRaidPartyPlanner() {
     [selectedRaidKeys, roleOverrides, ownerToggles, reserveRaidCounts, raidPreferences, seed]
   );
 
+  const clearedRaidKeysByCharacter = useMemo(() => {
+    const map = new Map();
+    const groupsForCleared =
+      hydrateSavedScheduleGroups(savedScheduleGroups) ??
+      (isValidScheduleGroups(savedScheduleGroups)
+        ? savedScheduleGroups
+        : applyManualSwapsToGroups(schedule.groups, manualSwaps));
+
+    for (const group of groupsForCleared) {
+      for (const party of group.parties) {
+        if (!completedPartyKeys.includes(getPartyDoneKey(party))) continue;
+
+        for (const member of getPartyMembers(party)) {
+          const characterId = getCharacterId(member);
+          if (!map.has(characterId)) map.set(characterId, new Set());
+          map.get(characterId).add(group.raid.key);
+        }
+      }
+    }
+
+    return map;
+  }, [savedScheduleGroups, schedule.groups, manualSwaps, completedPartyKeys]);
+
+  const assignedRaidKeysByCharacter = useMemo(() => {
+    const map = new Map();
+    const groupsForAssigned =
+      hydrateSavedScheduleGroups(savedScheduleGroups) ??
+      (isValidScheduleGroups(savedScheduleGroups)
+        ? savedScheduleGroups
+        : applyManualSwapsToGroups(schedule.groups, manualSwaps));
+
+    for (const group of groupsForAssigned) {
+      for (const party of group.parties) {
+        for (const member of getPartyMembers(party)) {
+          const characterId = getCharacterId(member);
+          if (!map.has(characterId)) map.set(characterId, new Set());
+          map.get(characterId).add(group.raid.key);
+        }
+      }
+    }
+
+    return map;
+  }, [savedScheduleGroups, schedule.groups, manualSwaps]);
+
   const visibleCharacters = useMemo(() => {
     const lowerQuery = query.trim().toLowerCase();
     return schedule.characterRuns
       .filter((character) => {
         if (!lowerQuery) return true;
-        return [character.owner, character.name, character.className, character.build]
+        return [character.owner, character.name]
           .join(" ")
           .toLowerCase()
           .includes(lowerQuery);
@@ -2561,7 +2666,7 @@ export default function LostArkRaidPartyPlanner() {
       if (character.reserve) continue;
 
       if (character.eligibleRaidCount > 0 && character.runCount < 3) {
-        issues.push(`${character.name}: ${character.runCount}/3회만 편성됨`);
+        issues.push(`${character.name}: ${character.runCount}회만 편성됨`);
       }
       
     }
@@ -2790,15 +2895,35 @@ export default function LostArkRaidPartyPlanner() {
     setManualSwapMessage("교환 완료");
   };
 
+  const normalizedPartySearch = partySearch.trim().toLowerCase();
+
+  const isPartyMatchedBySearch = (party) => {
+    if (!normalizedPartySearch) return true;
+
+    return getPartyMembers(party).some((member) =>
+      [member.owner, member.name]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedPartySearch)
+    );
+  };
+
+  const isPartyMatchedByOwnerFilter = (party) => {
+    const partyOwners = new Set(getPartyMembers(party).map((member) => member.owner));
+
+    for (const owner of partyOwners) {
+      if (!activeOwnerFilters.includes(owner)) return false;
+    }
+
+    return true;
+  };
+
   const visibleGroups = finalGroups
     .filter((group) => activeRaidFilters.includes(group.raid.key))
     .map((group) => {
       const visibleParties = group.parties.filter((party) => {
-        const partyOwners = new Set(getPartyMembers(party).map((member) => member.owner));
-
-        for (const owner of partyOwners) {
-          if (!activeOwnerFilters.includes(owner)) return false;
-        }
+        if (!isPartyMatchedBySearch(party)) return false;
+        if (!isPartyMatchedByOwnerFilter(party)) return false;
 
         return true;
       });
@@ -2816,7 +2941,7 @@ export default function LostArkRaidPartyPlanner() {
         <div style={styles.container}>
           <section style={styles.hero}>
             <h1 style={styles.title}>Lost Ark Raid Planner</h1>
-            <p style={styles.desc}>공유 편성 데이터를 불러오는 중...</p>
+            <p style={styles.desc}>데이터를 불러오는 중...</p>
           </section>
         </div>
       </main>
@@ -2872,64 +2997,86 @@ export default function LostArkRaidPartyPlanner() {
 
         <section style={styles.raidSelectBox}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: showFilterPanel ? "8px" : 0 }}>
-            <strong style={{ fontSize: "13px" }}>필터 / 공유 설정</strong>
-            <button
-              type="button"
-              onClick={() => setShowFilterPanel((value) => !value)}
-              style={styles.miniButton}
-            >
-              {showFilterPanel ? "접기" : "열기"}
-            </button>
+            <strong style={{ fontSize: "13px" }}>필터</strong>
+            <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={() => setShowAdminPanel((value) => !value)}
+                style={showAdminPanel ? styles.miniActiveButton : styles.miniButton}
+              >
+                관리자 설정
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowFilterPanel((value) => !value)}
+                style={styles.miniButton}
+              >
+                {showFilterPanel ? "접기" : "열기"}
+              </button>
+            </div>
           </div>
 
           {showFilterPanel && (
             <>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center", marginBottom: "8px" }}>
-            <span style={{ ...styles.smallText, fontWeight: 900 }}>공유</span>
-            <button
-              type="button"
-              onClick={() => setSharedSyncEnabled((value) => !value)}
-              style={sharedSyncEnabled ? styles.miniActiveButton : styles.miniButton}
-            >
-              동기화 {sharedSyncEnabled ? "ON" : "OFF"}
-            </button>
-            <button type="button" onClick={() => loadSharedState()} style={styles.miniButton}>
-              불러오기
-            </button>
-            <button
-              type="button"
-              onClick={() => saveSharedState()}
-              style={hasPendingManualChange() ? styles.miniButton : styles.miniActiveButton}
-              title={hasPendingManualChange() ? "교환 완료 후 저장할 수 있습니다" : "현재 편성을 공유 상태로 저장"}
-            >
-              저장
-            </button>
-            <span style={{ ...styles.smallText }}>{sharedSyncStatus}</span>
-          </div>
 
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center", marginBottom: "8px" }}>
-            <span style={{ ...styles.smallText, fontWeight: 900 }}>수동 교환</span>
-            <span style={{ ...styles.smallText }}>
-              같은 레이드 안에서 카드끼리 자유 교환 후, 교환 완료를 눌러 조건을 검증합니다.
-            </span>
-            {hasPendingManualChange() && (
-              <button type="button" onClick={completeManualSwaps} style={styles.miniActiveButton}>
-                교환 완료
-              </button>
-            )}
-            {manualSwapMessage && (
-              <span
-                onClick={clearManualMessage}
-                style={{
-                  ...styles.badge,
-                  ...(manualSwapMessage === "교환 완료" ? styles.goodBadge : styles.warnBadge),
-                  cursor: "pointer",
-                }}
-              >
-                {manualSwapMessage}
-              </span>
-            )}
-          </div>
+          {showAdminPanel && (
+            <div
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: "12px",
+                padding: "8px",
+                marginBottom: "8px",
+                background: "#f9fafb",
+              }}
+            >
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center", marginBottom: "8px" }}>
+                <span style={{ ...styles.smallText, fontWeight: 900 }}>공유</span>
+                <button
+                  type="button"
+                  onClick={() => setSharedSyncEnabled((value) => !value)}
+                  style={sharedSyncEnabled ? styles.miniActiveButton : styles.miniButton}
+                >
+                  동기화 {sharedSyncEnabled ? "ON" : "OFF"}
+                </button>
+                <button type="button" onClick={() => loadSharedState()} style={styles.miniButton}>
+                  불러오기
+                </button>
+                <button
+                  type="button"
+                  onClick={() => saveSharedState()}
+                  style={hasPendingManualChange() ? styles.miniButton : styles.miniActiveButton}
+                  title={hasPendingManualChange() ? "교환 완료 후 저장할 수 있습니다" : "현재 편성을 공유 상태로 저장"}
+                >
+                  저장
+                </button>
+                <span style={{ ...styles.smallText }}>{sharedSyncStatus}</span>
+              </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+                <span style={{ ...styles.smallText, fontWeight: 900 }}>수동 교환</span>
+                <span style={{ ...styles.smallText }}>
+                  같은 레이드 안에서 카드끼리 자유 교환 후, 교환 완료를 눌러 조건을 검증합니다.
+                </span>
+                {hasPendingManualChange() && (
+                  <button type="button" onClick={completeManualSwaps} style={styles.miniActiveButton}>
+                    교환 완료
+                  </button>
+                )}
+                {manualSwapMessage && (
+                  <span
+                    onClick={clearManualMessage}
+                    style={{
+                      ...styles.badge,
+                      ...(manualSwapMessage === "교환 완료" ? styles.goodBadge : styles.warnBadge),
+                      cursor: "pointer",
+                    }}
+                  >
+                    {manualSwapMessage}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
             <span style={{ ...styles.smallText, fontWeight: 900 }}>레이드 필터</span>
@@ -2945,18 +3092,36 @@ export default function LostArkRaidPartyPlanner() {
             ))}
           </div>
 
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center", marginTop: "8px" }}>
-            <span style={{ ...styles.smallText, fontWeight: 900 }}>사람 필터</span>
-            {owners.map((owner) => (
-              <button
-                key={`owner-filter-${owner}`}
-                type="button"
-                onClick={() => toggleOwnerFilter(owner)}
-                style={activeOwnerFilters.includes(owner) ? styles.miniActiveButton : styles.miniButton}
-              >
-                {owner}
-              </button>
-            ))}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: "10px",
+              alignItems: "center",
+              marginTop: "8px",
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+              <span style={{ ...styles.smallText, fontWeight: 900 }}>사람 필터</span>
+              {owners.map((owner) => (
+                <button
+                  key={`owner-filter-${owner}`}
+                  type="button"
+                  onClick={() => toggleOwnerFilter(owner)}
+                  style={activeOwnerFilters.includes(owner) ? styles.miniActiveButton : styles.miniButton}
+                >
+                  {owner}
+                </button>
+              ))}
+            </div>
+
+            <input
+              value={partySearch}
+              onChange={(event) => setPartySearch(event.target.value)}
+              placeholder="캐릭터, 유저 검색"
+              style={{ ...styles.miniInput, marginLeft: "auto" }}
+            />
           </div>
                     </>
           )}
@@ -2974,21 +3139,7 @@ export default function LostArkRaidPartyPlanner() {
 
         {showRaidOverview && (
           <RaidOverview
-            groups={finalGroups
-              .filter((group) => activeRaidFilters.includes(group.raid.key))
-              .map((group) => ({
-                ...group,
-                parties: group.parties.filter((party) => {
-                  const partyOwners = new Set(getPartyMembers(party).map((member) => member.owner));
-
-                  for (const owner of partyOwners) {
-                    if (!activeOwnerFilters.includes(owner)) return false;
-                  }
-
-                  return true;
-                }),
-              }))
-              .filter((group) => group.parties.length > 0)}
+            groups={visibleGroups}
             completedPartyKeys={completedPartyKeys}
           />
         )}
@@ -3128,22 +3279,24 @@ export default function LostArkRaidPartyPlanner() {
                 style={{
                   display: "flex",
                   justifyContent: "space-between",
+                  alignItems: "flex-start",
                   gap: "12px",
                   flexWrap: "wrap",
                   marginBottom: "14px",
+                  minWidth: 0,
                 }}
               >
-                <div>
+                <div style={{ minWidth: 0, flex: "1 1 220px" }}>
                   <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>캐릭터 편성 현황</h2>
                   <p style={{ ...styles.smallText, margin: "4px 0 0" }}>
-                    각 캐릭터가 3회씩 들어갔는지 확인
+                    레이드 편성 및 설정, 클리어 현황
                   </p>
                 </div>
-                <div style={{ width: "280px", maxWidth: "100%" }}>
+                <div style={{ flex: "1 1 280px", maxWidth: "360px", minWidth: 0 }}>
                   <input
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
-                    placeholder="캐릭터, 직업, 유저 검색"
+                    placeholder="캐릭터, 유저 검색"
                     style={styles.input}
                   />
                 </div>
@@ -3158,6 +3311,8 @@ export default function LostArkRaidPartyPlanner() {
                     showRaidPreferenceControls
                     raidPreferences={raidPreferences}
                     onChangeRaidPreference={changeRaidPreference}
+                    clearedRaidKeys={clearedRaidKeysByCharacter.get(getCharacterId(character)) ?? new Set()}
+                    assignedRaidKeys={assignedRaidKeysByCharacter.get(getCharacterId(character)) ?? new Set()}
                   />
                 ))}
               </div>
