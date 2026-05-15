@@ -131,6 +131,7 @@ const styles = {
     cursor: "pointer",
     lineHeight: 1.2,
     boxShadow: "none",
+    whiteSpace: "nowrap",
   },
   miniActiveButton: {
     border: "1px solid #1f2937",
@@ -143,6 +144,7 @@ const styles = {
     cursor: "pointer",
     lineHeight: 1.2,
     boxShadow: "none",
+    whiteSpace: "nowrap",
   },
   statGrid: {
     display: "grid",
@@ -651,7 +653,13 @@ function getPartyMembers(party) {
 
 function summarizeParty(party) {
   const members = Array.isArray(party) ? party : getPartyMembers(party);
-  const powers = members.map((member) => Number(member.power ?? 0));
+
+  // 평균 전투력은 딜러만 기준으로 계산한다.
+  // 발키리를 SUPPORT로 바꾼 경우에도 서폿 전투력이 평균에 섞이지 않게 한다.
+  const dpsMembersForAverage = members.filter(
+    (member) => getClassMeta(member).role !== "SUPPORT"
+  );
+  const powers = dpsMembersForAverage.map((member) => Number(member.power ?? 0));
   const avgPower = powers.length
     ? Math.round(powers.reduce((sum, value) => sum + value, 0) / powers.length)
     : 0;
@@ -977,7 +985,6 @@ function compactMemberForSave(member) {
     build: member.build,
     level: member.level,
     power: member.power,
-    reserve: Boolean(member.reserve),
     roleOverride: member.roleOverride,
   };
 }
@@ -1035,6 +1042,45 @@ function hydrateSavedScheduleGroups(savedGroups) {
     .filter(Boolean);
 
   return isValidScheduleGroups(hydrated) ? hydrated : null;
+}
+
+function cloneScheduleGroupsForEdit(groups) {
+  return groups.map((group) => ({
+    ...group,
+    raid: group.raid,
+    parties: group.parties.map((party) => ({
+      ...party,
+      raid: party.raid,
+      synergyCounts: { ...(party.synergyCounts ?? {}) },
+      slots: party.slots.map((slot) => ({
+        ...slot,
+        member: slot.member ? { ...slot.member } : null,
+      })),
+    })),
+  }));
+}
+
+function removeEmptyPartiesFromGroups(groups) {
+  return groups.map((group) => ({
+    ...group,
+    parties: group.parties.filter((party) =>
+      party.slots.some((slot) => slot.member)
+    ),
+  }));
+}
+
+function replaceRaidGroupOnly(groups, raidKey, nextRaidGroup) {
+  const nextGroups = cloneScheduleGroupsForEdit(groups);
+  const index = nextGroups.findIndex((group) => group.raid.key === raidKey);
+
+  if (index === -1) {
+    return [...nextGroups, nextRaidGroup].sort(
+      (a, b) => getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid)
+    );
+  }
+
+  nextGroups[index] = nextRaidGroup;
+  return nextGroups.sort((a, b) => getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid));
 }
 
 function findPartyById(groups, raidKey, partyId) {
@@ -1098,9 +1144,7 @@ function validateAllManualGroups(groups, raidPreferences = {}) {
       }
 
       for (const member of members) {
-        const canEnter = member.reserve
-          ? member.level >= group.raid.minLevel && member.level <= group.raid.maxLevel
-          : canCharacterEnterRaid(member, group.raid, raidPreferences);
+        const canEnter = canCharacterEnterRaid(member, group.raid, raidPreferences);
 
         if (!canEnter) {
           errors.push(`${group.raid.name}: ${member.name} 레벨이 맞지 않습니다.`);
@@ -1614,71 +1658,22 @@ function compactRaidGroup(raidGroup, targetAvgPower) {
   });
 }
 
-function getReserveCountForRaid(reserveRaidCounts, raidKey) {
-  return reserveRaidCounts[raidKey] ?? 0;
-}
-
-function getSelectedReserveCharactersForRaid(raid, reserveCharacters, reserveRaidCounts, ownerToggles, raidPreferences) {
-  const count = getReserveCountForRaid(reserveRaidCounts, raid.key);
-  if (count <= 0) return [];
-
-  return reserveCharacters
-    .filter((character) => isOwnerEnabledForRaid(ownerToggles, raid.key, character.owner))
-    .filter(
-      (character) => character.level >= raid.minLevel && character.level <= raid.maxLevel
-    )
-    .sort((a, b) => getEffectivePower(b) - getEffectivePower(a))
-    .slice(0, count);
-}
-
-function isReserveSelectedForRaid(character, raid, reserveCharacters, reserveRaidCounts, ownerToggles, raidPreferences) {
-  return getSelectedReserveCharactersForRaid(
-    raid,
-    reserveCharacters,
-    reserveRaidCounts,
-    ownerToggles,
-    raidPreferences
-  ).some((reserveCharacter) => getCharacterId(reserveCharacter) === getCharacterId(character));
-}
-
-function getCharactersForRaid(raid, characters, reserveCharacters, reserveRaidCounts, ownerToggles, raidPreferences) {
-  const baseCharacters = characters.filter((character) =>
-    isOwnerEnabledForRaid(ownerToggles, raid.key, character.owner)
-  );
-
-  const selectedReserveCharacters = getSelectedReserveCharactersForRaid(
-    raid,
-    reserveCharacters,
-    reserveRaidCounts,
-    ownerToggles,
-    raidPreferences
-  );
-
-  return [...baseCharacters, ...selectedReserveCharacters];
-}
-
-function generateSchedule({ selectedRaidKeys, roleOverrides, ownerToggles, reserveRaidCounts, raidPreferences }) {
-  const characters = CHARACTERS.filter((character) => !character.reserve);
-  const reserveCharacters = CHARACTERS.filter((character) => character.reserve);
+function generateSchedule({ selectedRaidKeys, roleOverrides, ownerToggles, raidPreferences }) {
+  const characters = CHARACTERS;
   const selectedRaids = getOrderedRaids().filter((raid) => selectedRaidKeys.includes(raid.key));
 
   const usageMap = new Map(
-    [...characters, ...reserveCharacters].map((character) => [getCharacterId(character), 0])
+    characters.map((character) => [getCharacterId(character), 0])
   );
 
   const raidTargetPowerMap = new Map(
     selectedRaids.map((raid) => {
-      const raidCharacters = getCharactersForRaid(
-        raid,
-        characters,
-        reserveCharacters,
-        reserveRaidCounts,
-        ownerToggles,
-        raidPreferences
+      const raidCharacters = characters.filter((character) =>
+        isOwnerEnabledForRaid(ownerToggles, raid.key, character.owner)
       );
-      const eligibleCharacters = raidCharacters.filter((character) =>
-        canCharacterEnterRaid(character, raid, raidPreferences)
-      );
+      const eligibleCharacters = raidCharacters
+        .filter((character) => canCharacterEnterRaid(character, raid, raidPreferences))
+        .map((character) => applyRoleOverrides(character, roleOverrides, raid.key));
       const eligibleDpsCharacters = eligibleCharacters.filter(
         (character) => getClassMeta(character).role !== "SUPPORT"
       );
@@ -1699,32 +1694,17 @@ function generateSchedule({ selectedRaidKeys, roleOverrides, ownerToggles, reser
   const groupMap = new Map(groups.map((group) => [group.raid.key, group]));
   const unableCharacters = [];
 
-  const sortedCharacters = [...characters, ...reserveCharacters].sort((a, b) => {
+  const sortedCharacters = [...characters].sort((a, b) => {
     const roleDiff = getClassMeta(a).role === "SUPPORT" ? -1 : getClassMeta(b).role === "SUPPORT" ? 1 : 0;
     if (roleDiff !== 0) return roleDiff;
     return b.level - a.level || getEffectivePower(b) - getEffectivePower(a);
   });
 
   for (const character of sortedCharacters) {
-    const eligibleRaids = (character.reserve
-      ? selectedRaids.filter((raid) => {
-          if (!isOwnerEnabledForRaid(ownerToggles, raid.key, character.owner)) return false;
-          if (character.level < raid.minLevel || character.level > raid.maxLevel) return false;
-
-          return isReserveSelectedForRaid(
-            character,
-            raid,
-            reserveCharacters,
-            reserveRaidCounts,
-            ownerToggles,
-            raidPreferences
-          );
-        })
-      : getEligibleRaids(character, selectedRaidKeys, raidPreferences).filter((raid) => {
-          if (!isOwnerEnabledForRaid(ownerToggles, raid.key, character.owner)) return false;
-          return true;
-        })
-    );
+    const eligibleRaids = getEligibleRaids(character, selectedRaidKeys, raidPreferences).filter((raid) => {
+      if (!isOwnerEnabledForRaid(ownerToggles, raid.key, character.owner)) return false;
+      return true;
+    });
 
     if (!eligibleRaids.length) {
       unableCharacters.push({ ...character, reason: "선택된 레이드 중 입장 가능한 레이드 없음" });
@@ -1769,36 +1749,19 @@ function generateSchedule({ selectedRaidKeys, roleOverrides, ownerToggles, reser
     ? Math.max(...raidSpreads.map((item) => item.spread))
     : 0;
 
-  const trackedCharacters = [
-    ...characters,
-    ...reserveCharacters.filter(
-      (character) => (usageMap.get(getCharacterId(character)) ?? 0) > 0
-    ),
-  ];
-
-  const characterRuns = trackedCharacters
+  const characterRuns = characters
     .map((character) => ({
       ...character,
       runCount: usageMap.get(getCharacterId(character)) ?? 0,
       eligibleRaidCount: getEligibleRaids(character, selectedRaidKeys, raidPreferences).filter((raid) => {
         if (!isOwnerEnabledForRaid(ownerToggles, raid.key, character.owner)) return false;
-        if (character.reserve) {
-          return isReserveSelectedForRaid(
-            character,
-            raid,
-            reserveCharacters,
-            reserveRaidCounts,
-            ownerToggles,
-            raidPreferences
-          );
-        }
         return true;
       }).length,
     }))
     .sort((a, b) => a.runCount - b.runCount || b.level - a.level);
 
   const completedRunCharacterCount = characterRuns.filter(
-    (character) => !character.reserve && character.runCount === 3
+    (character) => character.runCount === 3
   ).length;
 
   return {
@@ -2380,7 +2343,7 @@ export default function LostArkRaidPartyPlanner() {
     () => {
       const list = [
         ...new Set(
-          CHARACTERS.filter((character) => !character.reserve).map((character) => character.owner)
+          CHARACTERS.map((character) => character.owner)
         ),
       ];
       return list.sort((a, b) => {
@@ -2397,7 +2360,6 @@ export default function LostArkRaidPartyPlanner() {
   const [activeOwnerFilters, setActiveOwnerFilters] = useState(owners);
   const [roleOverrides, setRoleOverrides] = useState({});
   const [ownerToggles, setOwnerToggles] = useState({});
-  const [reserveRaidCounts, setReserveRaidCounts] = useState({});
   const [raidPreferences, setRaidPreferences] = useState({});
   const [manualSwaps, setManualSwaps] = useState([]);
   const [confirmedManualSwaps, setConfirmedManualSwaps] = useState([]);
@@ -2409,6 +2371,7 @@ export default function LostArkRaidPartyPlanner() {
   const [showRaidOverview, setShowRaidOverview] = useState(false);
   const [showFilterPanel, setShowFilterPanel] = useState(true);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [raidEditOpenMap, setRaidEditOpenMap] = useState({});
   const [partySearch, setPartySearch] = useState("");
   const [isNarrowScreen, setIsNarrowScreen] = useState(() => window.innerWidth < 900);
   const [savedScheduleGroupsBeforePending, setSavedScheduleGroupsBeforePending] = useState(null);
@@ -2436,7 +2399,6 @@ export default function LostArkRaidPartyPlanner() {
     updatedAt: new Date().toISOString(),
     roleOverrides,
     ownerToggles,
-    reserveRaidCounts,
     raidPreferences,
     manualSwaps,
     confirmedManualSwaps,
@@ -2450,7 +2412,6 @@ export default function LostArkRaidPartyPlanner() {
     isApplyingSharedStateRef.current = true;
     setRoleOverrides(state.roleOverrides ?? {});
     setOwnerToggles(state.ownerToggles ?? {});
-    setReserveRaidCounts(state.reserveRaidCounts ?? {});
     setRaidPreferences(state.raidPreferences ?? {});
     setManualSwaps(state.manualSwaps ?? []);
     setConfirmedManualSwaps(state.confirmedManualSwaps ?? []);
@@ -2591,11 +2552,10 @@ export default function LostArkRaidPartyPlanner() {
       selectedRaidKeys,
       roleOverrides,
       ownerToggles,
-      reserveRaidCounts,
       raidPreferences,
       seed,
     }),
-    [selectedRaidKeys, roleOverrides, ownerToggles, reserveRaidCounts, raidPreferences, seed]
+    [selectedRaidKeys, roleOverrides, ownerToggles, raidPreferences, seed]
   );
 
   const clearedRaidKeysByCharacter = useMemo(() => {
@@ -2716,8 +2676,6 @@ export default function LostArkRaidPartyPlanner() {
     }
 
     for (const character of schedule.characterRuns) {
-      if (character.reserve) continue;
-
       if (character.eligibleRaidCount > 0 && character.runCount < 3) {
         issues.push(`${character.name}: ${character.runCount}회만 편성됨`);
       }
@@ -2807,32 +2765,64 @@ export default function LostArkRaidPartyPlanner() {
     });
   };
 
-  const changeReserveCountForRaid = (raid, delta) => {
-    clearManualSwapsForAutoRebuild();
-    const maxCount = CHARACTERS.filter(
-      (character) =>
-        character.reserve &&
-        character.level >= raid.minLevel &&
-        character.level <= raid.maxLevel
-    ).length;
+  const rebuildOnlyRaid = (raidKey) => {
+    const rebuiltGroup = schedule.groups.find((group) => group.raid.key === raidKey);
+    if (!rebuiltGroup) return;
 
-    setReserveRaidCounts((prev) => {
-      const current = prev[raid.key] ?? 0;
-      const next = Math.max(0, Math.min(maxCount, current + delta));
-      return {
-        ...prev,
-        [raid.key]: next,
-      };
+    setSavedScheduleGroups((currentSavedGroups) => {
+      const baseGroups =
+        hydrateSavedScheduleGroups(currentSavedGroups) ??
+        (isValidScheduleGroups(currentSavedGroups) ? currentSavedGroups : finalGroups);
+
+      return replaceRaidGroupOnly(baseGroups, raidKey, rebuiltGroup);
     });
+
+    setManualSwaps([]);
+    setConfirmedManualSwaps([]);
+    setManualSwapMessage("");
+    setManualEditPending(false);
+    setSavedScheduleGroupsBeforePending(null);
+    setSharedSyncStatus(`${rebuiltGroup.raid.name}만 다시 편성됨 · 저장 버튼을 누르면 공유됩니다.`);
   };
 
   const toggleOwnerForRaid = (raidKey, owner) => {
-    clearManualSwapsForAutoRebuild();
     const key = getOwnerToggleKey(raidKey, owner);
-    setOwnerToggles((prev) => ({
-      ...prev,
-      [key]: prev[key] === false ? true : false,
-    }));
+
+    setOwnerToggles((prev) => {
+      const nextOwnerToggles = {
+        ...prev,
+        [key]: prev[key] === false ? true : false,
+      };
+
+      const rebuiltSchedule = generateSchedule({
+        selectedRaidKeys,
+        roleOverrides,
+        ownerToggles: nextOwnerToggles,
+        raidPreferences,
+        seed,
+      });
+
+      const rebuiltGroup = rebuiltSchedule.groups.find((group) => group.raid.key === raidKey);
+
+      if (rebuiltGroup) {
+        setSavedScheduleGroups((currentSavedGroups) => {
+          const baseGroups =
+            hydrateSavedScheduleGroups(currentSavedGroups) ??
+            (isValidScheduleGroups(currentSavedGroups) ? currentSavedGroups : finalGroups);
+
+          return replaceRaidGroupOnly(baseGroups, raidKey, rebuiltGroup);
+        });
+      }
+
+      return nextOwnerToggles;
+    });
+
+    setManualSwaps([]);
+    setConfirmedManualSwaps([]);
+    setManualSwapMessage("");
+    setManualEditPending(false);
+    setSavedScheduleGroupsBeforePending(null);
+    setSharedSyncStatus("해당 레이드만 다시 반영됨 · 저장 버튼을 누르면 공유됩니다.");
   };
 
   const clearManualMessage = () => {
@@ -2916,7 +2906,10 @@ export default function LostArkRaidPartyPlanner() {
   };
 
   const completeManualSwaps = () => {
-    const groupsToValidate = savedScheduleGroups ?? displayedGroups;
+    const groupsToValidate = removeEmptyPartiesFromGroups(
+      savedScheduleGroups ?? displayedGroups
+    );
+
     const errors = validateAllManualGroups(groupsToValidate, raidPreferences);
 
     if (errors.length > 0) {
@@ -2928,21 +2921,29 @@ export default function LostArkRaidPartyPlanner() {
         if (rollbackGroups) {
           setSavedScheduleGroups(rollbackGroups);
         }
+
         setSavedScheduleGroupsBeforePending(null);
         setManualEditPending(false);
-        setManualSwapMessage(`조건 불일치로 저장된 최종 편성 상태로 되돌렸습니다: ${errors[0]}`);
+        setManualSwapMessage(
+          `조건 불일치로 저장된 최종 편성 상태로 되돌렸습니다: ${errors[0]}`
+        );
         return;
       }
 
       setManualSwaps(confirmedManualSwaps);
       setManualEditPending(false);
-      setManualSwapMessage(`조건 불일치로 이전 완료 상태로 되돌렸습니다: ${errors[0]}`);
+      setManualSwapMessage(
+        `조건 불일치로 이전 완료 상태로 되돌렸습니다: ${errors[0]}`
+      );
       return;
     }
 
     if (!savedScheduleGroups) {
       setConfirmedManualSwaps(manualSwaps);
+    } else {
+      setSavedScheduleGroups(groupsToValidate);
     }
+
     setSavedScheduleGroupsBeforePending(null);
     setManualEditPending(false);
     setManualSwapMessage("교환 완료");
@@ -3128,6 +3129,21 @@ export default function LostArkRaidPartyPlanner() {
                   </span>
                 )}
               </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center", marginTop: "8px" }}>
+                <span style={{ ...styles.smallText, fontWeight: 900 }}>클리어</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCompletedPartyKeys([]);
+                    setSharedSyncStatus("클리어 체크가 초기화되었습니다. 저장 버튼을 누르면 공유됩니다.");
+                  }}
+                  style={styles.miniButton}
+                  title="모든 파티/공대 클리어 체크를 해제합니다"
+                >
+                  클리어 리셋
+                </button>
+              </div>
             </div>
           )}
 
@@ -3200,6 +3216,7 @@ export default function LostArkRaidPartyPlanner() {
         <section style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
           {visibleGroups.map((group) => {
             const rule = getRoleSlotRule(group.raid);
+            const isRaidEditOpen = raidEditOpenMap[group.raid.key] ?? false;
             return (
               <div key={group.raid.key} style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 <div
@@ -3210,57 +3227,92 @@ export default function LostArkRaidPartyPlanner() {
                     flexWrap: "wrap",
                   }}
                 >
-                  <div>
-                    <h2 style={styles.sectionTitle}>{group.raid.name}</h2>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "6px", alignItems: "center" }}>
-                      <span style={{ ...styles.smallText, fontWeight: 900 }}>참여</span>
-                      {owners.map((owner) => {
-                        const enabled = isOwnerEnabledForRaid(ownerToggles, group.raid.key, owner);
-                        return (
-                          <button
-                            key={`${group.raid.key}-${owner}`}
-                            type="button"
-                            onClick={() => toggleOwnerForRaid(group.raid.key, owner)}
-                            style={enabled ? styles.miniActiveButton : styles.miniButton}
-                            title={`${group.raid.name} ${owner} 참여 ${enabled ? "ON" : "OFF"}`}
-                          >
-                            {owner}
-                          </button>
-                        );
-                      })}
-
-                      {CHARACTERS.some(
-                        (character) =>
-                          character.reserve &&
-                          character.level >= group.raid.minLevel &&
-                          character.level <= group.raid.maxLevel
-                      ) && (
-                        <div style={{ display: "flex", alignItems: "center", gap: "3px", marginLeft: "8px" }}>
-                          <span style={{ ...styles.smallText, fontWeight: 900 }}>영수디트</span>
-                          <button
-                            type="button"
-                            onClick={() => changeReserveCountForRaid(group.raid, -1)}
-                            style={styles.miniButton}
-                            title={`${group.raid.name} 영수디트 제거`}
-                          >
-                            -
-                          </button>
-                          <span style={{ ...styles.badge, minWidth: "20px", justifyContent: "center" }}>
-                            {getReserveCountForRaid(reserveRaidCounts, group.raid.key)}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => changeReserveCountForRaid(group.raid, 1)}
-                            style={styles.miniButton}
-                            title={`${group.raid.name} 영수디트 추가`}
-                          >
-                            +
-                          </button>
-                        </div>
-                      )}
+                  <div style={{ minWidth: 0, flex: "1 1 auto" }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <h2 style={styles.sectionTitle}>{group.raid.name}</h2>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRaidEditOpenMap((prev) => ({
+                            ...prev,
+                            [group.raid.key]: !(prev[group.raid.key] ?? false),
+                          }))
+                        }
+                        style={isRaidEditOpen ? styles.miniActiveButton : styles.miniButton}
+                        title={`${group.raid.name} 수정 메뉴 ${isRaidEditOpen ? "닫기" : "열기"}`}
+                      >
+                        수정
+                      </button>
                     </div>
+
+                    {isRaidEditOpen && (
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: "8px",
+                          marginTop: "6px",
+                          width: "100%",
+                          flexWrap: "wrap",
+                        }}
+                      >
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: "4px",
+                          alignItems: "center",
+                          minWidth: 0,
+                        }}
+                      >
+                        <span style={{ ...styles.smallText, fontWeight: 900 }}>참여</span>
+                        {owners.map((owner) => {
+                          const enabled = isOwnerEnabledForRaid(ownerToggles, group.raid.key, owner);
+                          return (
+                            <button
+                              key={`${group.raid.key}-${owner}`}
+                              type="button"
+                              onClick={() => toggleOwnerForRaid(group.raid.key, owner)}
+                              style={enabled ? styles.miniActiveButton : styles.miniButton}
+                              title={`${group.raid.name} ${owner} 참여 ${enabled ? "ON" : "OFF"}`}
+                            >
+                              {owner}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "flex-end",
+                          alignItems: "center",
+                          gap: "4px",
+                          marginLeft: "auto",
+                          flexWrap: "wrap",
+                        }}
+                      >
+
+                        <button
+                          type="button"
+                          onClick={() => rebuildOnlyRaid(group.raid.key)}
+                          style={styles.miniButton}
+                          title={`${group.raid.name}만 다시 편성`}
+                        >
+                          편성
+                        </button>
+                      </div>
+                    </div>
+                    )}
                   </div>
-                  
                 </div>
 
                 {group.parties.length ? (

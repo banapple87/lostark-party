@@ -324,61 +324,55 @@ export const CHARACTERS = [
 
     {
         owner: "영수",
-        name: "영수디트1",
+        name: "오함마링해볼까",
         className: "디스트로이어",
         build: "중력 수련",
-        level: 1750,
-        power: 4500,
-        reserve: true
+        level: 1779,
+        power: 6500,
     },
 
     {
         owner: "영수",
-        name: "영수디트2",
+        name: "함머링해볼까",
         className: "디스트로이어",
         build: "중력 수련",
-        level: 1750,
-        power: 4500,
-        reserve: true
+        level: 1754,
+        power: 4511,
     },
 
     {
         owner: "영수",
-        name: "영수디트3",
+        name: "햄머링해볼까",
         className: "디스트로이어",
         build: "중력 수련",
-        level: 1750,
-        power: 4500,
-        reserve: true
+        level: 1753,
+        power: 4533,
     },
 
     {
         owner: "영수",
-        name: "영수디트4",
+        name: "해머링해볼까",
         className: "디스트로이어",
         build: "중력 수련",
-        level: 1750,
+        level: 1751,
         power: 4500,
-        reserve: true
     },
 
     {
         owner: "영수",
-        name: "영수디트5",
+        name: "햄마링해볼까",
         className: "디스트로이어",
         build: "중력 수련",
-        level: 1750,
+        level: 1751,
         power: 4500,
-        reserve: true
     },
 
     {
         owner: "영수",
-        name: "영수디트6",
+        name: "함마링해볼까",
         className: "디스트로이어",
         build: "중력 수련",
         level: 1750,
         power: 4500,
-        reserve: true
     }
 ];
