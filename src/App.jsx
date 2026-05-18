@@ -1301,7 +1301,7 @@ function validatePartyAfterManualSwap(party) {
     const groupMembers = getMembersInGroup(party, group);
     const classSet = new Set(groupMembers.map((member) => getClassIdentity(member)));
     if (classSet.size !== groupMembers.length) {
-      return "같은 4인 파티 안에 같은 직업이 중복됩니다.";
+      return "같은 파티 안에 같은 직업이 중복됩니다.";
     }
   }
 
@@ -2566,6 +2566,114 @@ function ConcurrentRunOverview({ groups, completedPartyKeys }) {
         )}
       </div>
     </section>
+  );
+}
+
+function buildClearGoldRankings(groups, completedPartyKeys) {
+  const ownerMap = new Map();
+
+  for (const group of groups) {
+    const clearGold = Number(group.raid.clearGold ?? 0);
+    if (!Number.isFinite(clearGold) || clearGold <= 0) continue;
+
+    for (const party of group.parties) {
+      const isDone = completedPartyKeys.includes(getPartyDoneKey(party));
+
+      for (const member of getPartyMembers(party)) {
+        const owner = member.owner || "미지정";
+        if (!ownerMap.has(owner)) {
+          ownerMap.set(owner, {
+            owner,
+            clearedGold: 0,
+            totalGold: 0,
+            clearedCount: 0,
+            totalCount: 0,
+          });
+        }
+
+        const item = ownerMap.get(owner);
+        item.totalGold += clearGold;
+        item.totalCount += 1;
+
+        if (isDone) {
+          item.clearedGold += clearGold;
+          item.clearedCount += 1;
+        }
+      }
+    }
+  }
+
+  return [...ownerMap.values()].sort(
+    (a, b) =>
+      b.totalGold - a.totalGold ||
+      b.clearedGold - a.clearedGold ||
+      a.owner.localeCompare(b.owner, "ko")
+  );
+}
+
+function ClearGoldRanking({ groups, completedPartyKeys }) {
+  const rankings = buildClearGoldRankings(groups, completedPartyKeys);
+
+  return (
+    <div style={styles.card}>
+      <div style={styles.cardPad}>
+        <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>클골 순위</h2>
+        <p style={{ ...styles.smallText, marginTop: "4px" }}>
+          현재 Planner에 편성된 파티의 클리어 골드 기준입니다.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
+          {rankings.length ? (
+            rankings.map((item, index) => (
+              <div
+                key={item.owner}
+                style={{
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "12px",
+                  padding: "9px 10px",
+                  background: "#ffffff",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  alignItems: "center",
+                  minWidth: 0,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                  <span
+                    style={{
+                      ...styles.badge,
+                      ...(index < 3 ? styles.warnBadge : styles.purpleBadge),
+                      fontWeight: 950,
+                      minWidth: "32px",
+                      justifyContent: "center",
+                    }}
+                  >
+                    {index + 1}위
+                  </span>
+                  <div
+                    style={{
+                      fontWeight: 950,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {item.owner}
+                  </div>
+                </div>
+
+                <div style={{ fontWeight: 950, whiteSpace: "nowrap", color: "#92400e" }}>
+                  {formatGold(item.clearedGold) || "0"} / {formatGold(item.totalGold) || "0"}골드
+                </div>
+              </div>
+            ))
+          ) : (
+            <div style={styles.issue}>표시할 클리어 골드가 없습니다.</div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3885,7 +3993,7 @@ export default function LostArkRaidPartyPlanner() {
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
                 <span style={{ ...styles.smallText, fontWeight: 900 }}>수동 교환</span>
                 <span style={{ ...styles.smallText }}>
-                  같은 레이드 안에서 카드끼리 자유 교환 후, 교환 완료를 눌러 조건을 검증합니다.
+                  같은 레이드 안에서 캐릭터끼리 교환 후, 교환 완료를 눌러 검증합니다.
                 </span>
                 {hasPendingManualChange() && (
                   <button type="button" onClick={completeManualSwaps} style={styles.miniActiveButton}>
@@ -4375,36 +4483,43 @@ export default function LostArkRaidPartyPlanner() {
             </div>
           </div>
 
-          <div id="validation-detail-section" style={{ ...styles.card, scrollMarginTop: "180px" }}>
-            <div style={styles.cardPad}>
-              <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>검증 상세</h2>
-              <p style={{ ...styles.smallText, marginTop: "4px" }}>
-                동일 인물/직업 중복, 3회 미달 캐릭터를 표시합니다.
-              </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px", minWidth: 0 }}>
+            <div id="validation-detail-section" style={{ ...styles.card, scrollMarginTop: "180px" }}>
+              <div style={styles.cardPad}>
+                <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>검증 상세</h2>
+                <p style={{ ...styles.smallText, marginTop: "4px" }}>
+                  동일 인물, 직업 중복, 미포함, 하향지원 캐릭터를 표시합니다.
+                </p>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
-                {validation.length ? (
-                  validation.slice(0, 50).map((issue) => (
-                    <div key={issue} style={styles.issue}>
-                      {issue}
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
+                  {validation.length ? (
+                    validation.slice(0, 50).map((issue) => (
+                      <div key={issue} style={styles.issue}>
+                        {issue}
+                      </div>
+                    ))
+                  ) : (
+                    <div
+                      style={{
+                        border: "1px solid #bbf7d0",
+                        background: "#f0fdf4",
+                        color: "#15803d",
+                        borderRadius: "10px",
+                        padding: "14px",
+                        fontWeight: 900,
+                      }}
+                    >
+                      모든 조건을 만족합니다.
                     </div>
-                  ))
-                ) : (
-                  <div
-                    style={{
-                      border: "1px solid #bbf7d0",
-                      background: "#f0fdf4",
-                      color: "#15803d",
-                      borderRadius: "10px",
-                      padding: "14px",
-                      fontWeight: 900,
-                    }}
-                  >
-                    모든 조건을 만족합니다.
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             </div>
+
+            <ClearGoldRanking
+              groups={getCurrentFinalGroups()}
+              completedPartyKeys={completedPartyKeys}
+            />
           </div>
         </section>
       </div>
