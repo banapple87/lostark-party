@@ -1133,6 +1133,134 @@ function syncGroupMembersWithCharacters(groups, characters) {
   }));
 }
 
+
+function getRaidFamilyByRaidKey(raidKey) {
+  return RAID_FAMILIES.find((family) => family.keys.includes(raidKey)) ?? null;
+}
+
+function getBestCurrentRaidForFamily(character, family) {
+  const currentLevelRaids = family.keys
+    .map(getRaidByKey)
+    .filter(Boolean)
+    .filter((raid) => character.level >= raid.minLevel && character.level <= raid.maxLevel)
+    .sort((a, b) => b.minLevel - a.minLevel);
+
+  if (currentLevelRaids.length) return currentLevelRaids[0];
+
+  const availableRaids = family.keys
+    .map(getRaidByKey)
+    .filter(Boolean)
+    .filter((raid) => character.level >= raid.minLevel)
+    .sort((a, b) => b.minLevel - a.minLevel);
+
+  return availableRaids[0] ?? null;
+}
+
+function getDowngradeRaidWarnings(groups) {
+  const warnings = [];
+
+  for (const group of groups) {
+    for (const party of group.parties) {
+      for (const member of getPartyMembers(party)) {
+        const family = getRaidFamilyByRaidKey(group.raid.key);
+        if (!family) continue;
+
+        const bestRaid = getBestCurrentRaidForFamily(member, family);
+        if (!bestRaid) continue;
+        if (bestRaid.key === group.raid.key) continue;
+        if (bestRaid.minLevel <= group.raid.minLevel) continue;
+
+        warnings.push(`${member.name}: ${bestRaid.name} → ${group.raid.name}`);
+      }
+    }
+  }
+
+  return [...new Set(warnings)];
+}
+
+function reconcilePresetGroupsWithCurrentData(presetGroups, characters, presetRaidPreferences = {}) {
+  const characterMap = new Map(
+    characters.map((character) => [getCharacterId(character), character])
+  );
+  const warnings = [];
+  const nextRaidPreferences = { ...(presetRaidPreferences ?? {}) };
+
+  const groups = presetGroups
+    .map((group) => {
+      const raid = getRaidByKey(group.raid?.key ?? group.raidKey);
+      if (!raid) {
+        warnings.push("알 수 없는 레이드가 프리셋에서 제외되었습니다.");
+        return null;
+      }
+
+      const parties = group.parties.map((party, partyIndex) => {
+        const nextParty = {
+          ...party,
+          raid,
+          slots: party.slots.map((slot) => {
+            if (!slot.member) return { ...slot, member: null };
+
+            const latestCharacter = characterMap.get(getCharacterId(slot.member));
+            if (!latestCharacter) {
+              warnings.push(`${raid.name} ${partyIndex + 1}${raid.partySize === 8 ? "공대" : "파티"}: ${slot.member.name} 캐릭터를 현재 Characters 시트에서 찾을 수 없어 제외했습니다.`);
+              return { ...slot, member: null };
+            }
+
+            const mergedCharacter = {
+              ...latestCharacter,
+              roleOverride: slot.member.roleOverride,
+            };
+
+            const family = getRaidFamilyByRaidKey(raid.key);
+            if (family) {
+              const bestRaid = getBestCurrentRaidForFamily(mergedCharacter, family);
+
+              if (bestRaid && bestRaid.key !== raid.key) {
+                for (const familyRaidKey of family.keys) {
+                  delete nextRaidPreferences[getRaidPreferenceKey(mergedCharacter, familyRaidKey)];
+                }
+
+                nextRaidPreferences[getRaidPreferenceKey(mergedCharacter, raid.key)] = "FORCE";
+
+                if (bestRaid.minLevel > raid.minLevel) {
+                  warnings.push(`${mergedCharacter.name}: ${bestRaid.name} → ${raid.name}`);
+                }
+              }
+            }
+
+            return {
+              ...slot,
+              member: mergedCharacter,
+            };
+          }),
+          synergyCounts: {},
+        };
+
+        rebuildSynergyCounts(nextParty);
+
+        const partyWarning = validatePartyAfterManualSwap(nextParty);
+        if (partyWarning) {
+          warnings.push(`${raid.name} ${partyIndex + 1}${raid.partySize === 8 ? "공대" : "파티"}: ${partyWarning}`);
+        }
+
+        return nextParty;
+      });
+
+      return {
+        raid,
+        parties,
+        targetAvgPower: 0,
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    groups: removeEmptyPartiesFromGroups(groups),
+    raidPreferences: nextRaidPreferences,
+    warnings,
+  };
+}
+
 function replaceRaidGroupOnly(groups, raidKey, nextRaidGroup) {
   const nextGroups = cloneScheduleGroupsForEdit(groups);
   const index = nextGroups.findIndex((group) => group.raid.key === raidKey);
@@ -2239,12 +2367,203 @@ function RaidOverview({ groups, completedPartyKeys }) {
         <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", marginBottom: "10px" }}>
           <div>
             <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>레이드 현황 한눈에 보기</h2>
+            <p style={{ ...styles.smallText, margin: "6px 0 0" }}>
+              레이드 현황을 최소 정보로 최대한 많이 보여줍니다.
+            </p>
           </div>
         </div>
 
         <div style={styles.overviewGrid}>
           {orderedGroups.map(renderOverviewGroup)}
         </div>
+      </div>
+    </section>
+  );
+}
+
+
+function getPartyOwnerList(party) {
+  return [...new Set(getPartyMembers(party).map((member) => member.owner))];
+}
+
+function hasOwnerOverlap(ownerListA, ownerListB) {
+  const ownerSet = new Set(ownerListA);
+  return ownerListB.some((owner) => ownerSet.has(owner));
+}
+
+function buildConcurrentRunPlan(groups, completedPartyKeys) {
+  const fourMemberParties = [];
+  const eightMemberParties = [];
+
+  for (const group of groups) {
+    for (const [partyIndex, party] of group.parties.entries()) {
+      if (completedPartyKeys.includes(getPartyDoneKey(party))) continue;
+
+      const members = getPartyMembers(party);
+      if (!members.length) continue;
+
+      const owners = getPartyOwnerList(party);
+      const item = {
+        id: `${group.raid.key}-${party.id}`,
+        raid: group.raid,
+        party,
+        partyIndex,
+        owners,
+        memberCount: members.length,
+        slotCount: party.slots.length,
+        isFull: members.length === party.slots.length,
+      };
+
+      if (group.raid.partySize === 8) {
+        if (item.isFull) {
+          eightMemberParties.push(item);
+        }
+      } else {
+        fourMemberParties.push(item);
+      }
+    }
+  }
+
+  fourMemberParties.sort(
+    (a, b) =>
+      b.memberCount - a.memberCount ||
+      Number(b.isFull) - Number(a.isFull) ||
+      getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid) ||
+      a.partyIndex - b.partyIndex
+  );
+
+  const candidates = [];
+
+  for (let i = 0; i < fourMemberParties.length; i += 1) {
+    for (let j = i + 1; j < fourMemberParties.length; j += 1) {
+      const first = fourMemberParties[i];
+      const second = fourMemberParties[j];
+      if (hasOwnerOverlap(first.owners, second.owners)) continue;
+
+      const totalMembers = first.memberCount + second.memberCount;
+      const fullCount = Number(first.isFull) + Number(second.isFull);
+      const differentRaidBonus = first.raid.key !== second.raid.key ? 1 : 0;
+      const score = totalMembers * 10000 + fullCount * 1000 + differentRaidBonus * 100 - i - j;
+
+      candidates.push({
+        pair: [first, second],
+        totalMembers,
+        score,
+      });
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+
+  const usedPartyIds = new Set();
+  const pairs = [];
+
+  for (const candidate of candidates) {
+    const [first, second] = candidate.pair;
+    if (usedPartyIds.has(first.id) || usedPartyIds.has(second.id)) continue;
+
+    pairs.push(candidate);
+    usedPartyIds.add(first.id);
+    usedPartyIds.add(second.id);
+  }
+
+  const waiting = fourMemberParties
+    .filter((item) => !usedPartyIds.has(item.id))
+    .sort(
+      (a, b) =>
+        b.memberCount - a.memberCount ||
+        Number(b.isFull) - Number(a.isFull) ||
+        getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid) ||
+        a.partyIndex - b.partyIndex
+    );
+
+  return { eightMemberParties, pairs, waiting };
+}
+
+function ConcurrentRunCard({ item }) {
+  const isEightRaid = item.raid.partySize === 8;
+  const slotGroups = [...new Set(item.party.slots.map((slot) => slot.group))];
+
+  return (
+    <div style={styles.overviewPartyCard}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+        <strong style={{ fontSize: "12px" }}>
+          {item.raid.name} {isEightRaid ? `공대 ${item.partyIndex + 1}` : `파티 ${item.partyIndex + 1}`}
+        </strong>
+      </div>
+
+      {isEightRaid ? (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "8px" }}>
+          {slotGroups.map((slotGroup) => {
+            const groupSlots = item.party.slots.filter((slot) => slot.group === slotGroup);
+            return (
+              <div key={`${item.id}-${slotGroup}`}>
+                <div style={{ ...styles.smallText, fontWeight: 900, marginBottom: "4px" }}>
+                  {slotGroup === "A" ? "1파티" : "2파티"}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px" }}>
+                  {groupSlots.map((slot, slotIndex) => (
+                    <CompactMember key={`${item.id}-${slotGroup}-${slotIndex}`} slot={slot} />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px" }}>
+          {item.party.slots.map((slot, slotIndex) => (
+            <CompactMember key={`${item.id}-${slotIndex}`} slot={slot} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConcurrentRunOverview({ groups, completedPartyKeys }) {
+  const plan = buildConcurrentRunPlan(groups, completedPartyKeys);
+
+  return (
+    <section style={styles.card}>
+      <div style={styles.cardPad}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", marginBottom: "10px" }}>
+          <div>
+            <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>동시 진행 보기</h2>
+            <p style={{ ...styles.smallText, margin: "6px 0 0" }}>
+              완료되지 않은 4인 파티 중 유저가 겹치지 않는 조합을 묶어서 보여줍니다.
+            </p>
+          </div>
+        </div>
+
+        {plan.eightMemberParties.length > 0 && (
+          <div style={{ marginBottom: "14px" }}>
+            <div style={styles.overviewGrid}>
+              {plan.eightMemberParties.map((item) => (
+                <ConcurrentRunCard key={`eight-${item.id}`} item={item} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div style={styles.overviewGrid}>
+          {plan.pairs.map((pairItem, index) => (
+            <div key={`pair-${pairItem.pair[0].id}-${pairItem.pair[1].id}`} style={styles.overviewRaidCard}>
+              <div style={{ marginBottom: "8px" }}>
+                <strong style={{ fontSize: "11px" }}>{index + 1}번 동시 출발</strong>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "8px" }}>
+                {pairItem.pair.map((item) => (
+                  <ConcurrentRunCard key={`pair-card-${item.id}`} item={item} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {plan.eightMemberParties.length === 0 && plan.pairs.length === 0 && (
+          <div style={styles.issue}>진행할 미완료 파티가 없습니다.</div>
+        )}
       </div>
     </section>
   );
@@ -2438,6 +2757,7 @@ export default function LostArkRaidPartyPlanner() {
   const [completedPartyKeys, setCompletedPartyKeys] = useState([]);
   const [savedScheduleGroups, setSavedScheduleGroups] = useState(null);
   const [showRaidOverview, setShowRaidOverview] = useState(false);
+  const [showConcurrentRunOverview, setShowConcurrentRunOverview] = useState(false);
   const [showFilterPanel, setShowFilterPanel] = useState(true);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [raidEditOpenMap, setRaidEditOpenMap] = useState({});
@@ -2451,6 +2771,12 @@ export default function LostArkRaidPartyPlanner() {
     SHEET_STATE_API_URL ? "공유 동기화 준비됨" : "공유 URL 미설정"
   );
   const [sharedInitialLoading, setSharedInitialLoading] = useState(Boolean(SHEET_STATE_API_URL));
+  const [presets, setPresets] = useState([]);
+  const [presetName, setPresetName] = useState("");
+  const [selectedPresetId, setSelectedPresetId] = useState("");
+  const [presetStatus, setPresetStatus] = useState("");
+  const [presetValidationMessages, setPresetValidationMessages] = useState([]);
+  const [isPresetBusy, setIsPresetBusy] = useState(false);
   const hasLoadedSharedStateRef = useRef(false);
   const isApplyingSharedStateRef = useRef(false);
   const lastSavedSharedStateRef = useRef("");
@@ -2588,6 +2914,15 @@ export default function LostArkRaidPartyPlanner() {
     savedScheduleGroups: compactScheduleGroups(getCurrentFinalGroups()),
   });
 
+  const getPresetStateSnapshot = () => ({
+    version: SHARED_STATE_VERSION,
+    updatedAt: new Date().toISOString(),
+    roleOverrides,
+    ownerToggles,
+    raidPreferences,
+    savedScheduleGroups: compactScheduleGroups(getCurrentFinalGroups()),
+  });
+
   const applySharedState = (state) => {
     if (!state || typeof state !== "object") return;
 
@@ -2598,6 +2933,7 @@ export default function LostArkRaidPartyPlanner() {
     setManualSwaps(state.manualSwaps ?? []);
     setConfirmedManualSwaps(state.confirmedManualSwaps ?? []);
     setCompletedPartyKeys(state.completedPartyKeys ?? []);
+    setPresetValidationMessages([]);
 
     const loadedSavedGroups =
       hydrateSavedScheduleGroups(state.savedScheduleGroups) ??
@@ -2703,8 +3039,198 @@ export default function LostArkRaidPartyPlanner() {
     }
   };
 
+
+  const loadPresets = async ({ silent = false } = {}) => {
+    if (!SHEET_STATE_API_URL) return;
+
+    try {
+      if (!silent) setPresetStatus("프리셋 목록 불러오는 중...");
+      const response = await fetch(`${SHEET_STATE_API_URL}?action=listPresets&t=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      if (!result?.ok || !Array.isArray(result.presets)) {
+        throw new Error(result?.error || "프리셋 목록을 불러오지 못했습니다.");
+      }
+
+      setPresets(result.presets);
+      if (!silent) setPresetStatus(`프리셋 ${result.presets.length}개 불러옴`);
+    } catch (error) {
+      setPresetStatus(error.message || "프리셋 목록을 불러오지 못했습니다.");
+    }
+  };
+
+  const savePreset = async () => {
+    const name = presetName.trim();
+    if (!name) {
+      setPresetStatus("프리셋 이름을 입력하세요.");
+      return;
+    }
+
+    if (hasPendingManualChange()) {
+      setPresetStatus("프리셋 저장 전 교환 완료를 눌러 검증해야 합니다.");
+      return;
+    }
+
+    const groupsToSave = getCurrentFinalGroups();
+    const validationErrors = validateAllManualGroups(groupsToSave, raidPreferences);
+    if (validationErrors.length > 0) {
+      setPresetStatus(`프리셋 저장 실패: ${validationErrors[0]}`);
+      return;
+    }
+
+    try {
+      setIsPresetBusy(true);
+      setPresetStatus("프리셋 저장 중...");
+
+      const response = await fetch(SHEET_STATE_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8",
+        },
+        body: JSON.stringify({
+          action: "savePreset",
+          name,
+          state: getPresetStateSnapshot(),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      if (!result?.ok) {
+        throw new Error(result?.error || "프리셋 저장에 실패했습니다.");
+      }
+
+      setSelectedPresetId(result.preset?.id ?? selectedPresetId);
+      setPresetStatus(`프리셋 저장됨: ${name}`);
+      await loadPresets({ silent: true });
+    } catch (error) {
+      setPresetStatus(error.message || "프리셋 저장에 실패했습니다.");
+    } finally {
+      setIsPresetBusy(false);
+    }
+  };
+
+  const loadPreset = async () => {
+    if (!selectedPresetId) {
+      setPresetStatus("불러올 프리셋을 선택하세요.");
+      return;
+    }
+
+    try {
+      setIsPresetBusy(true);
+      setPresetStatus("프리셋 불러오는 중...");
+
+      const response = await fetch(`${SHEET_STATE_API_URL}?action=getPreset&id=${encodeURIComponent(selectedPresetId)}&t=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      if (!result?.ok || !result.preset?.state) {
+        throw new Error(result?.error || "프리셋을 불러오지 못했습니다.");
+      }
+
+      const presetState = result.preset.state;
+      const presetGroups =
+        hydrateSavedScheduleGroups(presetState.savedScheduleGroups) ??
+        (isValidScheduleGroups(presetState.savedScheduleGroups) ? presetState.savedScheduleGroups : null);
+
+      if (!presetGroups) {
+        throw new Error("프리셋에 저장된 편성 정보를 읽을 수 없습니다.");
+      }
+
+      const reconciled = reconcilePresetGroupsWithCurrentData(
+        presetGroups,
+        characters,
+        presetState.raidPreferences ?? {}
+      );
+
+      setRoleOverrides(presetState.roleOverrides ?? {});
+      setOwnerToggles(presetState.ownerToggles ?? {});
+      setRaidPreferences(reconciled.raidPreferences);
+      setManualSwaps([]);
+      setConfirmedManualSwaps([]);
+      setManualEditPending(false);
+      setManualSwapMessage("");
+      setSavedScheduleGroups(reconciled.groups);
+      setSavedScheduleGroupsBeforePending(null);
+      setPresetValidationMessages(reconciled.warnings);
+      setSharedSyncStatus("프리셋을 불러왔습니다. 저장 버튼을 누르면 공유됩니다.");
+      setPresetStatus(
+        reconciled.warnings.length
+          ? `프리셋 불러옴 · 검증 ${reconciled.warnings.length}건`
+          : "프리셋 불러옴"
+      );
+    } catch (error) {
+      setPresetStatus(error.message || "프리셋을 불러오지 못했습니다.");
+    } finally {
+      setIsPresetBusy(false);
+    }
+  };
+
+  const deletePreset = async () => {
+    if (!selectedPresetId) {
+      setPresetStatus("삭제할 프리셋을 선택하세요.");
+      return;
+    }
+
+    const selectedPreset = presets.find((preset) => preset.id === selectedPresetId);
+    const selectedPresetName = selectedPreset?.name ?? "선택한 프리셋";
+
+    try {
+      setIsPresetBusy(true);
+      setPresetStatus("프리셋 삭제 중...");
+
+      const response = await fetch(SHEET_STATE_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8",
+        },
+        body: JSON.stringify({
+          action: "deletePreset",
+          id: selectedPresetId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      if (!result?.ok) {
+        throw new Error(result?.error || "프리셋 삭제에 실패했습니다.");
+      }
+
+      setSelectedPresetId("");
+      setPresetStatus(`프리셋 삭제됨: ${selectedPresetName}`);
+      await loadPresets({ silent: true });
+    } catch (error) {
+      setPresetStatus(error.message || "프리셋 삭제에 실패했습니다.");
+    } finally {
+      setIsPresetBusy(false);
+    }
+  };
+
   useEffect(() => {
     loadCharacters();
+  }, []);
+
+  useEffect(() => {
+    loadPresets({ silent: true });
   }, []);
 
   useEffect(() => {
@@ -2846,13 +3372,11 @@ export default function LostArkRaidPartyPlanner() {
 
   const validation = useMemo(() => {
     const issues = [];
+    const groupsForValidation = getCurrentFinalGroups();
 
-    for (const group of schedule.groups) {
+    for (const group of groupsForValidation) {
       for (const [partyIndex, party] of group.parties.entries()) {
         const members = getPartyMembers(party);
-        const emptySlots = party.slots.filter((slot) => !slot.member);
-        const summary = summarizeParty(party);
-        const rule = getRoleSlotRule(group.raid);
         const slotGroups = [...new Set(party.slots.map((slot) => slot.group))];
 
         const ownerSet = new Set(members.map((member) => member.owner));
@@ -2868,19 +3392,23 @@ export default function LostArkRaidPartyPlanner() {
             issues.push(`${group.raid.name} 파티 ${partyIndex + 1}-${slotGroup}: 동일 직업 중복`);
           }
         }
-        
       }
     }
 
     for (const character of schedule.characterRuns) {
-      if (character.eligibleRaidCount > 0 && character.runCount < 3) {
+      if (character.eligibleRaidCount >= 3 && character.runCount < 3) {
         issues.push(`${character.name}: ${character.runCount}회만 편성됨`);
       }
-      
     }
 
-    return issues;
-  }, [schedule]);
+    return [
+      ...new Set([
+        ...presetValidationMessages,
+        ...getDowngradeRaidWarnings(groupsForValidation),
+        ...issues,
+      ]),
+    ];
+  }, [schedule, presetValidationMessages, savedScheduleGroups, manualSwaps, characters, raidPreferences]);
 
   const changeValkyrieRole = (raidKey, character, role) => {
     clearManualSwapsForAutoRebuild();
@@ -2992,6 +3520,7 @@ export default function LostArkRaidPartyPlanner() {
       };
 
       const rebuiltSchedule = generateSchedule({
+        characters,
         selectedRaidKeys,
         roleOverrides,
         ownerToggles: nextOwnerToggles,
@@ -3231,6 +3760,7 @@ export default function LostArkRaidPartyPlanner() {
   return (
     <main style={styles.page}>
       <style>{`
+        html { scroll-behavior: smooth; }
         @keyframes characterRefreshSpin {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }
@@ -3247,7 +3777,14 @@ export default function LostArkRaidPartyPlanner() {
         </section>
 
         <section style={styles.statGrid}>
-          <div style={styles.card}>
+          <div
+            style={{ ...styles.card, cursor: "pointer" }}
+            onClick={() =>
+              document
+                .getElementById("character-status-section")
+                ?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }
+          >
             <div style={styles.cardPad}>
               <div style={styles.statLabel}>캐릭터</div>
               <div style={styles.statValue}>{schedule.stats.characterCount}명</div>
@@ -3271,7 +3808,14 @@ export default function LostArkRaidPartyPlanner() {
               <div style={styles.statValue}>{remainingPartyCount}개</div>
             </div>
           </div>
-          <div style={styles.card}>
+          <div
+            style={{ ...styles.card, cursor: "pointer" }}
+            onClick={() =>
+              document
+                .getElementById("validation-detail-section")
+                ?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }
+          >
             <div style={styles.cardPad}>
               <div style={styles.statLabel}>검증 결과</div>
               <div style={{ marginTop: "8px", fontSize: "20px", fontWeight: 900 }}>
@@ -3283,7 +3827,7 @@ export default function LostArkRaidPartyPlanner() {
 
         <section style={styles.raidSelectBox}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: showFilterPanel ? "8px" : 0 }}>
-            <strong style={{ fontSize: "13px" }}>필터</strong>
+            <strong style={{ fontSize: "13px" }}>필터 및 이동</strong>
             <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
               <button
                 type="button"
@@ -3360,6 +3904,61 @@ export default function LostArkRaidPartyPlanner() {
                     {manualSwapMessage}
                   </span>
                 )}
+              </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center", marginTop: "8px" }}>
+                <span style={{ ...styles.smallText, fontWeight: 900 }}>프리셋</span>
+                <input
+                  value={presetName}
+                  onChange={(event) => setPresetName(event.target.value)}
+                  placeholder="프리셋 이름"
+                  style={{ ...styles.miniInput, width: "150px" }}
+                />
+                <button
+                  type="button"
+                  onClick={savePreset}
+                  disabled={isPresetBusy}
+                  style={styles.miniButton}
+                >
+                  프리셋 저장
+                </button>
+                <select
+                  value={selectedPresetId}
+                  onChange={(event) => setSelectedPresetId(event.target.value)}
+                  style={{ ...styles.miniInput, width: "170px", padding: "3px 8px" }}
+                >
+                  <option value="">프리셋 선택</option>
+                  {presets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={loadPreset}
+                  disabled={isPresetBusy || !selectedPresetId}
+                  style={styles.miniButton}
+                >
+                  불러오기
+                </button>
+                <button
+                  type="button"
+                  onClick={deletePreset}
+                  disabled={isPresetBusy || !selectedPresetId}
+                  style={{ ...styles.miniButton, ...styles.dangerBadge }}
+                >
+                  삭제
+                </button>
+                <button
+                  type="button"
+                  onClick={() => loadPresets()}
+                  disabled={isPresetBusy}
+                  style={styles.miniButton}
+                >
+                  목록 새로고침
+                </button>
+                {presetStatus && <span style={{ ...styles.smallText }}>{presetStatus}</span>}
               </div>
 
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center", marginTop: "8px" }}>
@@ -3444,6 +4043,44 @@ export default function LostArkRaidPartyPlanner() {
                 </button>
               ))}
             </div>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: "10px",
+              alignItems: "center",
+              marginTop: "8px",
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+              <span style={{ ...styles.smallText, fontWeight: 900 }}>이동</span>
+              {orderedRaids.map((raid) => {
+                const isRaidVisible = activeRaidFilters.includes(raid.key);
+
+                return (
+                  <a
+                    key={`anchor-${raid.key}`}
+                    href={`#raid-section-${raid.key}`}
+                    onClick={(event) => {
+                      if (!isRaidVisible) event.preventDefault();
+                    }}
+                    style={{
+                      ...styles.miniButton,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      textDecoration: "none",
+                      opacity: isRaidVisible ? 1 : 0.38,
+                      cursor: isRaidVisible ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    {raid.name}
+                  </a>
+                );
+              })}
+            </div>
 
             <input
               value={partySearch}
@@ -3456,18 +4093,44 @@ export default function LostArkRaidPartyPlanner() {
           )}
         </section>
 
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap" }}>
           <button
             type="button"
-            onClick={() => setShowRaidOverview((value) => !value)}
+            onClick={() => {
+              setShowRaidOverview((value) => {
+                const nextValue = !value;
+                if (nextValue) setShowConcurrentRunOverview(false);
+                return nextValue;
+              });
+            }}
             style={showRaidOverview ? styles.activeButton : styles.button}
           >
             레이드 현황 {showRaidOverview ? "닫기" : "한눈에 보기"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setShowConcurrentRunOverview((value) => {
+                const nextValue = !value;
+                if (nextValue) setShowRaidOverview(false);
+                return nextValue;
+              });
+            }}
+            style={showConcurrentRunOverview ? styles.activeButton : styles.button}
+          >
+            동시 진행 {showConcurrentRunOverview ? "닫기" : "보기"}
           </button>
         </div>
 
         {showRaidOverview && (
           <RaidOverview
+            groups={visibleGroups}
+            completedPartyKeys={completedPartyKeys}
+          />
+        )}
+
+        {showConcurrentRunOverview && (
+          <ConcurrentRunOverview
             groups={visibleGroups}
             completedPartyKeys={completedPartyKeys}
           />
@@ -3479,7 +4142,11 @@ export default function LostArkRaidPartyPlanner() {
             const isRaidEditOpen = raidEditOpenMap[group.raid.key] ?? false;
             const clearGold = Number(group.raid.clearGold ?? 0);
             return (
-              <div key={group.raid.key} style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div
+                key={group.raid.key}
+                id={`raid-section-${group.raid.key}`}
+                style={{ display: "flex", flexDirection: "column", gap: "8px", scrollMarginTop: "180px" }}
+              >
                 <div
                   style={{
                     display: "flex",
@@ -3662,7 +4329,7 @@ export default function LostArkRaidPartyPlanner() {
               : styles.splitGrid.gridTemplateColumns,
           }}
         >
-          <div style={styles.card}>
+          <div id="character-status-section" style={{ ...styles.card, scrollMarginTop: "180px" }}>
             <div style={styles.cardPad}>
               <div
                 style={{
@@ -3708,7 +4375,7 @@ export default function LostArkRaidPartyPlanner() {
             </div>
           </div>
 
-          <div style={styles.card}>
+          <div id="validation-detail-section" style={{ ...styles.card, scrollMarginTop: "180px" }}>
             <div style={styles.cardPad}>
               <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>검증 상세</h2>
               <p style={{ ...styles.smallText, marginTop: "4px" }}>
