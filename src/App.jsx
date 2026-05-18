@@ -2415,7 +2415,7 @@ function buildConcurrentRunPlan(groups, completedPartyKeys) {
       };
 
       if (group.raid.partySize === 8) {
-        if (item.isFull) {
+        if (item.memberCount >= 6) {
           eightMemberParties.push(item);
         }
       } else {
