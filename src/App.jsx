@@ -2166,7 +2166,18 @@ function RaidOverview({ groups, completedPartyKeys }) {
     <div key={`overview-${group.raid.key}`} style={styles.overviewRaidCard}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
         <strong style={{ fontSize: "14px" }}>{group.raid.name}</strong>
-        <span style={styles.smallText}>{group.parties.length}개</span>
+        {Number(group.raid.clearGold ?? 0) > 0 && (
+          <span
+            style={{
+              ...styles.badge,
+              ...styles.warnBadge,
+              fontWeight: 950,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {formatGold(group.raid.clearGold)}G
+          </span>
+        )}
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -2228,9 +2239,6 @@ function RaidOverview({ groups, completedPartyKeys }) {
         <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", marginBottom: "10px" }}>
           <div>
             <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>레이드 현황 한눈에 보기</h2>
-            <p style={{ ...styles.smallText, margin: "4px 0 0" }}>
-              닉네임과 직업만 간단히 표시합니다.
-            </p>
           </div>
         </div>
 
