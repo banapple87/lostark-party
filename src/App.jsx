@@ -558,6 +558,16 @@ function formatPower(value) {
   return formatNumber(value, 2);
 }
 
+function formatGold(value) {
+  const number = Number(value ?? 0);
+
+  if (!Number.isFinite(number) || number <= 0) return "";
+
+  return number.toLocaleString("ko-KR", {
+    maximumFractionDigits: 0,
+  });
+}
+
 function normalizeText(value) {
   return String(value ?? "").split(" ").join("").toLowerCase();
 }
@@ -3368,7 +3378,7 @@ export default function LostArkRaidPartyPlanner() {
                     opacity: isRefreshingCharacters ? 0.7 : 1,
                     cursor: isRefreshingCharacters ? "wait" : "pointer",
                   }}
-                  title="모든 캐릭터의 레벨과 전투력을 갱신합니다"
+                  title="모든 캐릭터의 레벨과 전투력을 갱신합니다."
                 >
                   {isRefreshingCharacters && (
                     <span
@@ -3459,12 +3469,14 @@ export default function LostArkRaidPartyPlanner() {
           {visibleGroups.map((group) => {
             const rule = getRoleSlotRule(group.raid);
             const isRaidEditOpen = raidEditOpenMap[group.raid.key] ?? false;
+            const clearGold = Number(group.raid.clearGold ?? 0);
             return (
               <div key={group.raid.key} style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 <div
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
+                    alignItems: "flex-end",
                     gap: "8px",
                     flexWrap: "wrap",
                   }}
@@ -3473,7 +3485,7 @@ export default function LostArkRaidPartyPlanner() {
                     <div
                       style={{
                         display: "flex",
-                        alignItems: "center",
+                        alignItems: "flex-end",
                         gap: "8px",
                         flexWrap: "wrap",
                       }}
@@ -3555,6 +3567,20 @@ export default function LostArkRaidPartyPlanner() {
                     </div>
                     )}
                   </div>
+                  {clearGold > 0 && !isRaidEditOpen && (
+                    <span
+                      style={{
+                        ...styles.badge,
+                        ...styles.warnBadge,
+                        marginLeft: "auto",
+                        fontWeight: 950,
+                        whiteSpace: "nowrap",
+                        alignSelf: "flex-end",
+                      }}
+                    >
+                      {formatGold(clearGold)}G
+                    </span>
+                  )}
                 </div>
 
                 {group.parties.length ? (

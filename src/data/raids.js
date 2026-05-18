@@ -4,7 +4,8 @@ export const RAIDS = [
     name: "지평의 성당 1단계",
     minLevel: 1700,
     maxLevel: 1719,
-    partySize: 4
+    partySize: 4,
+    clearGold: 30000
   },
 
   {
@@ -12,7 +13,8 @@ export const RAIDS = [
     name: "지평의 성당 2단계",
     minLevel: 1720,
     maxLevel: 1749,
-    partySize: 4
+    partySize: 4,
+    clearGold: 40000
   },
 
   {
@@ -20,7 +22,8 @@ export const RAIDS = [
     name: "지평의 성당 3단계",
     minLevel: 1750,
     maxLevel: 9999,
-    partySize: 4
+    partySize: 4,
+    clearGold: 50000
   },
 
   {
@@ -28,7 +31,8 @@ export const RAIDS = [
     name: "세르카 노말",
     minLevel: 1710,
     maxLevel: 1729,
-    partySize: 4
+    partySize: 4,
+    clearGold: 35000
   },
 
   {
@@ -36,7 +40,8 @@ export const RAIDS = [
     name: "세르카 하드",
     minLevel: 1730,
     maxLevel: 9999,
-    partySize: 4
+    partySize: 4,
+    clearGold: 44000
   },
 
   {
@@ -44,7 +49,8 @@ export const RAIDS = [
     name: "종막 노말",
     minLevel: 1710,
     maxLevel: 1729,
-    partySize: 8
+    partySize: 8,
+    clearGold: 40000
   },
 
   {
@@ -52,6 +58,7 @@ export const RAIDS = [
     name: "종막 하드",
     minLevel: 1730,
     maxLevel: 9999,
-    partySize: 8
+    partySize: 8,
+    clearGold: 52000
   }
 ];
