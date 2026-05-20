@@ -2285,7 +2285,7 @@ function CompactMember({ slot }) {
   );
 }
 
-function RaidOverview({ groups, completedPartyKeys }) {
+function RaidOverview({ groups, completedPartyKeys, onTogglePartyDone }) {
   const orderedGroups = [...groups].sort(
     (a, b) => getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid)
   );
@@ -2310,7 +2310,8 @@ function RaidOverview({ groups, completedPartyKeys }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
         {group.parties.map((party, partyIndex) => {
-          const isDone = completedPartyKeys.includes(getPartyDoneKey(party));
+          const partyDoneKey = getPartyDoneKey(party);
+          const isDone = completedPartyKeys.includes(partyDoneKey);
           const isEightRaid = party.raid.partySize === 8;
           const slotGroups = [...new Set(party.slots.map((slot) => slot.group))];
 
@@ -2322,10 +2323,18 @@ function RaidOverview({ groups, completedPartyKeys }) {
                 opacity: isDone ? 0.45 : 1,
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                <strong style={{ fontSize: "12px" }}>
-                  {isEightRaid ? `공대 ${partyIndex + 1}` : `파티 ${partyIndex + 1}`}
-                </strong>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", gap: "8px" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer", minWidth: 0 }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(isDone)}
+                    onChange={() => onTogglePartyDone?.(partyDoneKey)}
+                    style={{ width: "13px", height: "13px", cursor: "pointer", flex: "0 0 auto" }}
+                  />
+                  <strong style={{ fontSize: "12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {isEightRaid ? `공대 ${partyIndex + 1}` : `파티 ${partyIndex + 1}`}
+                  </strong>
+                </label>
                 {isDone && <span style={styles.smallText}>완료</span>}
               </div>
 
@@ -2394,11 +2403,11 @@ function hasOwnerOverlap(ownerListA, ownerListB) {
 function buildConcurrentRunPlan(groups, completedPartyKeys) {
   const fourMemberParties = [];
   const eightMemberParties = [];
+  const waitingParties = [];
+  const completedParties = [];
 
   for (const group of groups) {
     for (const [partyIndex, party] of group.parties.entries()) {
-      if (completedPartyKeys.includes(getPartyDoneKey(party))) continue;
-
       const members = getPartyMembers(party);
       if (!members.length) continue;
 
@@ -2414,9 +2423,16 @@ function buildConcurrentRunPlan(groups, completedPartyKeys) {
         isFull: members.length === party.slots.length,
       };
 
+      if (completedPartyKeys.includes(getPartyDoneKey(party))) {
+        completedParties.push(item);
+        continue;
+      }
+
       if (group.raid.partySize === 8) {
         if (item.memberCount >= 6) {
           eightMemberParties.push(item);
+        } else {
+          waitingParties.push(item);
         }
       } else {
         fourMemberParties.push(item);
@@ -2467,29 +2483,52 @@ function buildConcurrentRunPlan(groups, completedPartyKeys) {
     usedPartyIds.add(second.id);
   }
 
-  const waiting = fourMemberParties
-    .filter((item) => !usedPartyIds.has(item.id))
-    .sort(
-      (a, b) =>
-        b.memberCount - a.memberCount ||
-        Number(b.isFull) - Number(a.isFull) ||
-        getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid) ||
-        a.partyIndex - b.partyIndex
-    );
+  const waiting = [
+    ...waitingParties,
+    ...fourMemberParties.filter((item) => !usedPartyIds.has(item.id)),
+  ].sort(
+    (a, b) =>
+      b.memberCount - a.memberCount ||
+      Number(b.isFull) - Number(a.isFull) ||
+      getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid) ||
+      a.partyIndex - b.partyIndex
+  );
 
-  return { eightMemberParties, pairs, waiting };
+  const completed = completedParties.sort(
+    (a, b) =>
+      getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid) ||
+      a.partyIndex - b.partyIndex
+  );
+
+  return { eightMemberParties, pairs, waiting, completed };
 }
 
-function ConcurrentRunCard({ item }) {
+function ConcurrentRunCard({ item, completedPartyKeys, onTogglePartyDone }) {
   const isEightRaid = item.raid.partySize === 8;
   const slotGroups = [...new Set(item.party.slots.map((slot) => slot.group))];
+  const partyDoneKey = getPartyDoneKey(item.party);
+  const isDone = completedPartyKeys?.includes(partyDoneKey);
 
   return (
-    <div style={styles.overviewPartyCard}>
+    <div
+      style={{
+        ...styles.overviewPartyCard,
+        opacity: isDone ? 0.45 : 1,
+      }}
+    >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
-        <strong style={{ fontSize: "12px" }}>
-          {item.raid.name} {isEightRaid ? `공대 ${item.partyIndex + 1}` : `파티 ${item.partyIndex + 1}`}
-        </strong>
+        <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer", minWidth: 0 }}>
+          <input
+            type="checkbox"
+            checked={Boolean(isDone)}
+            onChange={() => onTogglePartyDone?.(partyDoneKey)}
+            style={{ width: "13px", height: "13px", cursor: "pointer", flex: "0 0 auto" }}
+          />
+          <strong style={{ fontSize: "12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {item.raid.name} {isEightRaid ? `공대 ${item.partyIndex + 1}` : `파티 ${item.partyIndex + 1}`}
+          </strong>
+        </label>
+        {isDone && <span style={styles.smallText}>완료</span>}
       </div>
 
       {isEightRaid ? (
@@ -2521,8 +2560,20 @@ function ConcurrentRunCard({ item }) {
   );
 }
 
-function ConcurrentRunOverview({ groups, completedPartyKeys }) {
+function ConcurrentRunOverview({ groups, completedPartyKeys, onTogglePartyDone }) {
   const plan = buildConcurrentRunPlan(groups, completedPartyKeys);
+
+  const toggleRunDone = (items) => {
+    const keys = items.map((item) => getPartyDoneKey(item.party));
+    const isAllDone = keys.every((key) => completedPartyKeys.includes(key));
+
+    for (const key of keys) {
+      const isDone = completedPartyKeys.includes(key);
+      if ((isAllDone && isDone) || (!isAllDone && !isDone)) {
+        onTogglePartyDone?.(key);
+      }
+    }
+  };
 
   return (
     <section style={styles.card}>
@@ -2540,28 +2591,83 @@ function ConcurrentRunOverview({ groups, completedPartyKeys }) {
           <div style={{ marginBottom: "14px" }}>
             <div style={styles.overviewGrid}>
               {plan.eightMemberParties.map((item) => (
-                <ConcurrentRunCard key={`eight-${item.id}`} item={item} />
+                <ConcurrentRunCard key={`eight-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} />
               ))}
             </div>
           </div>
         )}
 
         <div style={styles.overviewGrid}>
-          {plan.pairs.map((pairItem, index) => (
-            <div key={`pair-${pairItem.pair[0].id}-${pairItem.pair[1].id}`} style={styles.overviewRaidCard}>
-              <div style={{ marginBottom: "8px" }}>
-                <strong style={{ fontSize: "11px" }}>{index + 1}번 동시 출발</strong>
+          {plan.pairs.map((pairItem, index) => {
+            const pairKeys = pairItem.pair.map((item) => getPartyDoneKey(item.party));
+            const isAllDone = pairKeys.every((key) => completedPartyKeys.includes(key));
+
+            return (
+              <div key={`pair-${pairItem.pair[0].id}-${pairItem.pair[1].id}`} style={styles.overviewRaidCard}>
+                <div style={{ marginBottom: "8px" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={isAllDone}
+                      onChange={() => toggleRunDone(pairItem.pair)}
+                      style={{ width: "13px", height: "13px", cursor: "pointer", flex: "0 0 auto" }}
+                    />
+                    <strong style={{ fontSize: "11px" }}>{index + 1}번 동시 출발</strong>
+                  </label>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "8px" }}>
+                  {pairItem.pair.map((item) => (
+                    <ConcurrentRunCard key={`pair-card-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} />
+                  ))}
+                </div>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "8px" }}>
-                {pairItem.pair.map((item) => (
-                  <ConcurrentRunCard key={`pair-card-${item.id}`} item={item} />
-                ))}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
-        {plan.eightMemberParties.length === 0 && plan.pairs.length === 0 && (
+        {(plan.waiting.length > 0 || plan.completed.length > 0) && (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(min(360px, 100%), 1fr))",
+              gap: "10px",
+              marginTop: "10px",
+              alignItems: "start",
+            }}
+          >
+            <div style={styles.overviewRaidCard}>
+              <div style={{ marginBottom: "8px" }}>
+                <strong style={{ fontSize: "11px" }}>대기 필요</strong>
+              </div>
+              {plan.waiting.length > 0 ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(260px, 100%), 1fr))", gap: "8px" }}>
+                  {plan.waiting.map((item) => (
+                    <ConcurrentRunCard key={`waiting-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} />
+                  ))}
+                </div>
+              ) : (
+                <div style={styles.issue}>대기 필요 파티가 없습니다.</div>
+              )}
+            </div>
+
+            <div style={styles.overviewRaidCard}>
+              <div style={{ marginBottom: "8px" }}>
+                <strong style={{ fontSize: "11px" }}>클리어 완료</strong>
+              </div>
+              {plan.completed.length > 0 ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(260px, 100%), 1fr))", gap: "8px" }}>
+                  {plan.completed.map((item) => (
+                    <ConcurrentRunCard key={`completed-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} />
+                  ))}
+                </div>
+              ) : (
+                <div style={styles.issue}>클리어 완료 파티가 없습니다.</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {plan.eightMemberParties.length === 0 && plan.pairs.length === 0 && plan.waiting.length === 0 && plan.completed.length === 0 && (
           <div style={styles.issue}>진행할 미완료 파티가 없습니다.</div>
         )}
       </div>
@@ -4234,6 +4340,7 @@ export default function LostArkRaidPartyPlanner() {
           <RaidOverview
             groups={visibleGroups}
             completedPartyKeys={completedPartyKeys}
+            onTogglePartyDone={togglePartyDone}
           />
         )}
 
@@ -4241,6 +4348,7 @@ export default function LostArkRaidPartyPlanner() {
           <ConcurrentRunOverview
             groups={visibleGroups}
             completedPartyKeys={completedPartyKeys}
+            onTogglePartyDone={togglePartyDone}
           />
         )}
 
