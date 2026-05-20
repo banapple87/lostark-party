@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { toBlob } from "html-to-image";
 
 
 import { CLASS_META } from "./data/classMeta";
@@ -42,6 +43,7 @@ const RAID_FAMILIES = [
 const SHEET_STATE_API_URL = "https://script.google.com/macros/s/AKfycbwmCdm0iY4EXs96avcrrLUCh6B9sfpSlua6G5D2Eb-ebvEQQYduJAJmQpBnWW8FzPbYQA/exec";
 
 const SHARED_STATE_VERSION = 1;
+const DISCORD_WEBHOOK_STORAGE_KEY = "lostark_party_discord_webhook_url";
 
 const styles = {
   page: {
@@ -568,6 +570,13 @@ function formatGold(value) {
   });
 }
 
+function makeDiscordImageFileName(title) {
+  return `${String(title || "lostark-party")
+    .replace(/[\/:*?"<>|]/g, "_")
+    .replace(/\s+/g, "_")
+    .slice(0, 80)}.png`;
+}
+
 function normalizeText(value) {
   return String(value ?? "").split(" ").join("").toLowerCase();
 }
@@ -697,6 +706,7 @@ function summarizeParty(party) {
   const synergyCounts = members.reduce((acc, member) => {
     const meta = getClassMeta(member);
     for (const synergy of meta.synergies ?? []) {
+      if (synergy === "서폿") continue;
       acc[synergy] = (acc[synergy] ?? 0) + 1;
     }
     return acc;
@@ -815,7 +825,9 @@ function balanceRaidDpsPower(raidGroup) {
 }
 
 function SynergyBadges({ synergyCounts }) {
-  const entries = Object.entries(synergyCounts ?? {}).filter(([, count]) => count > 0);
+  const entries = Object.entries(synergyCounts ?? {}).filter(
+    ([synergy, count]) => synergy !== "서폿" && count > 0
+  );
   if (!entries.length) return null;
 
   return (
@@ -929,6 +941,7 @@ function assignCharacterToRaid({ character, raidGroup, usageMap, targetAvgPower 
   best.party.slots[best.slotIndex].member = character;
   const meta = getClassMeta(character);
   for (const synergy of meta.synergies ?? []) {
+    if (synergy === "서폿") continue;
     best.party.synergyCounts[synergy] = (best.party.synergyCounts[synergy] ?? 0) + 1;
   }
 
@@ -942,6 +955,7 @@ function rebuildSynergyCounts(party) {
   for (const member of getPartyMembers(party)) {
     const meta = getClassMeta(member);
     for (const synergy of meta.synergies ?? []) {
+      if (synergy === "서폿") continue;
       party.synergyCounts[synergy] = (party.synergyCounts[synergy] ?? 0) + 1;
     }
   }
@@ -1989,6 +2003,34 @@ function Badge({ children, tone = "default" }) {
   return <span style={{ ...styles.badge, ...toneStyle }}>{children}</span>;
 }
 
+function DiscordShareButton({ onClick, disabled = false, visible = true }) {
+  if (!visible) return null;
+
+  return (
+    <button
+      type="button"
+      data-discord-share-hidden="true"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        border: "1px solid #2563eb",
+        background: "#eff6ff",
+        color: "#1d4ed8",
+        padding: "3px 8px",
+        borderRadius: "8px",
+        fontSize: "10px",
+        fontWeight: 950,
+        cursor: disabled ? "wait" : "pointer",
+        lineHeight: 1.2,
+        whiteSpace: "nowrap",
+        opacity: disabled ? 0.55 : 1,
+      }}
+    >
+      공유
+    </button>
+  );
+}
+
 function CharacterRow({
   character,
   runCount,
@@ -2004,8 +2046,10 @@ function CharacterRow({
   onChangeRaidPreference,
   clearedRaidKeys = new Set(),
   assignedRaidKeys = new Set(),
+  showCharacterSynergies = false,
 }) {
   const meta = getClassMeta(character);
+  const characterSynergies = (meta.synergies ?? []).filter((synergy) => synergy !== "서폿");
 
   return (
     <div
@@ -2049,7 +2093,6 @@ function CharacterRow({
           
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-end" }}>
-          {slotGroup && <Badge tone="purple">{slotGroup}파티</Badge>}
           {character.className === "발키리" && raidKey && onChangeValkyrieRole ? (
             <button
               type="button"
@@ -2081,6 +2124,11 @@ function CharacterRow({
         {runCount !== null && runCount !== undefined && (
           <Badge tone={runCount === 3 ? "good" : "warn"}>{runCount}회</Badge>
         )}
+        {showCharacterSynergies && characterSynergies.map((synergy) => (
+          <Badge key={`${getCharacterId(character)}-${synergy}`} tone="purple">
+            {synergy}
+          </Badge>
+        ))}
         {showRaidPreferenceControls && onChangeRaidPreference && (
           <div style={{ width: "100%", marginTop: "6px" }}>
             <div style={{ ...styles.smallText, fontWeight: 900, marginBottom: "4px" }}>
@@ -2203,7 +2251,6 @@ function EmptySlot({ role, slotGroup, dragRef, onDropCharacter }) {
     >
       <div>공팟</div>
       <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", justifyContent: "center" }}>
-        {slotGroup && <Badge tone="purple">{slotGroup}파티</Badge>}
         <Badge tone={role === "SUPPORT" ? "good" : "blue"}>{role}</Badge>
       </div>
     </div>
@@ -2285,7 +2332,7 @@ function CompactMember({ slot }) {
   );
 }
 
-function RaidOverview({ groups, completedPartyKeys, onTogglePartyDone }) {
+function RaidOverview({ groups, completedPartyKeys, onTogglePartyDone, onShareDiscordElement, isDiscordSharing, showDiscordShare }) {
   const orderedGroups = [...groups].sort(
     (a, b) => getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid)
   );
@@ -2318,6 +2365,7 @@ function RaidOverview({ groups, completedPartyKeys, onTogglePartyDone }) {
           return (
             <div
               key={`overview-${party.id}`}
+              data-discord-share-card="true"
               style={{
                 ...styles.overviewPartyCard,
                 opacity: isDone ? 0.45 : 1,
@@ -2335,7 +2383,18 @@ function RaidOverview({ groups, completedPartyKeys, onTogglePartyDone }) {
                     {isEightRaid ? `공대 ${partyIndex + 1}` : `파티 ${partyIndex + 1}`}
                   </strong>
                 </label>
-                {isDone && <span style={styles.smallText}>완료</span>}
+                <div style={{ display: "flex", gap: "4px", alignItems: "center", flex: "0 0 auto" }}>
+                  <DiscordShareButton
+                    visible={showDiscordShare}
+                    disabled={isDiscordSharing}
+                    onClick={(event) =>
+                      onShareDiscordElement?.(
+                        event.currentTarget.closest('[data-discord-share-card="true"]'),
+                        `${group.raid.name} ${isEightRaid ? `공대 ${partyIndex + 1}` : `파티 ${partyIndex + 1}`}`
+                      )
+                    }
+                  />
+                </div>
               </div>
 
               {isEightRaid ? (
@@ -2503,7 +2562,7 @@ function buildConcurrentRunPlan(groups, completedPartyKeys) {
   return { eightMemberParties, pairs, waiting, completed };
 }
 
-function ConcurrentRunCard({ item, completedPartyKeys, onTogglePartyDone }) {
+function ConcurrentRunCard({ item, completedPartyKeys, onTogglePartyDone, onShareDiscordElement, isDiscordSharing, showDiscordShare }) {
   const isEightRaid = item.raid.partySize === 8;
   const slotGroups = [...new Set(item.party.slots.map((slot) => slot.group))];
   const partyDoneKey = getPartyDoneKey(item.party);
@@ -2511,6 +2570,7 @@ function ConcurrentRunCard({ item, completedPartyKeys, onTogglePartyDone }) {
 
   return (
     <div
+      data-discord-share-card="true"
       style={{
         ...styles.overviewPartyCard,
         opacity: isDone ? 0.45 : 1,
@@ -2528,7 +2588,18 @@ function ConcurrentRunCard({ item, completedPartyKeys, onTogglePartyDone }) {
             {item.raid.name} {isEightRaid ? `공대 ${item.partyIndex + 1}` : `파티 ${item.partyIndex + 1}`}
           </strong>
         </label>
-        {isDone && <span style={styles.smallText}>완료</span>}
+        <div style={{ display: "flex", gap: "4px", alignItems: "center", flex: "0 0 auto" }}>
+          <DiscordShareButton
+            visible={showDiscordShare}
+            disabled={isDiscordSharing}
+            onClick={(event) =>
+              onShareDiscordElement?.(
+                event.currentTarget.closest('[data-discord-share-card="true"]'),
+                `${item.raid.name} ${isEightRaid ? `공대 ${item.partyIndex + 1}` : `파티 ${item.partyIndex + 1}`}`
+              )
+            }
+          />
+        </div>
       </div>
 
       {isEightRaid ? (
@@ -2560,7 +2631,7 @@ function ConcurrentRunCard({ item, completedPartyKeys, onTogglePartyDone }) {
   );
 }
 
-function ConcurrentRunOverview({ groups, completedPartyKeys, onTogglePartyDone }) {
+function ConcurrentRunOverview({ groups, completedPartyKeys, onTogglePartyDone, onShareDiscordElement, isDiscordSharing, showDiscordShare }) {
   const plan = buildConcurrentRunPlan(groups, completedPartyKeys);
 
   const toggleRunDone = (items) => {
@@ -2591,7 +2662,7 @@ function ConcurrentRunOverview({ groups, completedPartyKeys, onTogglePartyDone }
           <div style={{ marginBottom: "14px" }}>
             <div style={styles.overviewGrid}>
               {plan.eightMemberParties.map((item) => (
-                <ConcurrentRunCard key={`eight-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} />
+                <ConcurrentRunCard key={`eight-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} onShareDiscordElement={onShareDiscordElement} isDiscordSharing={isDiscordSharing} showDiscordShare={showDiscordShare} />
               ))}
             </div>
           </div>
@@ -2603,8 +2674,8 @@ function ConcurrentRunOverview({ groups, completedPartyKeys, onTogglePartyDone }
             const isAllDone = pairKeys.every((key) => completedPartyKeys.includes(key));
 
             return (
-              <div key={`pair-${pairItem.pair[0].id}-${pairItem.pair[1].id}`} style={styles.overviewRaidCard}>
-                <div style={{ marginBottom: "8px" }}>
+              <div key={`pair-${pairItem.pair[0].id}-${pairItem.pair[1].id}`} data-discord-share-card="true" style={styles.overviewRaidCard}>
+                <div style={{ marginBottom: "8px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
                   <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
                     <input
                       type="checkbox"
@@ -2614,10 +2685,20 @@ function ConcurrentRunOverview({ groups, completedPartyKeys, onTogglePartyDone }
                     />
                     <strong style={{ fontSize: "11px" }}>{index + 1}번 동시 출발</strong>
                   </label>
+                  <DiscordShareButton
+                    visible={showDiscordShare}
+                    disabled={isDiscordSharing}
+                    onClick={(event) =>
+                      onShareDiscordElement?.(
+                        event.currentTarget.closest('[data-discord-share-card="true"]'),
+                        `${index + 1}번 동시 출발`
+                      )
+                    }
+                  />
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "8px" }}>
                   {pairItem.pair.map((item) => (
-                    <ConcurrentRunCard key={`pair-card-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} />
+                    <ConcurrentRunCard key={`pair-card-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} onShareDiscordElement={onShareDiscordElement} isDiscordSharing={isDiscordSharing} showDiscordShare={showDiscordShare} />
                   ))}
                 </div>
               </div>
@@ -2642,7 +2723,7 @@ function ConcurrentRunOverview({ groups, completedPartyKeys, onTogglePartyDone }
               {plan.waiting.length > 0 ? (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(260px, 100%), 1fr))", gap: "8px" }}>
                   {plan.waiting.map((item) => (
-                    <ConcurrentRunCard key={`waiting-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} />
+                    <ConcurrentRunCard key={`waiting-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} onShareDiscordElement={onShareDiscordElement} isDiscordSharing={isDiscordSharing} showDiscordShare={showDiscordShare} />
                   ))}
                 </div>
               ) : (
@@ -2657,11 +2738,11 @@ function ConcurrentRunOverview({ groups, completedPartyKeys, onTogglePartyDone }
               {plan.completed.length > 0 ? (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(260px, 100%), 1fr))", gap: "8px" }}>
                   {plan.completed.map((item) => (
-                    <ConcurrentRunCard key={`completed-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} />
+                    <ConcurrentRunCard key={`completed-${item.id}`} item={item} completedPartyKeys={completedPartyKeys} onTogglePartyDone={onTogglePartyDone} onShareDiscordElement={onShareDiscordElement} isDiscordSharing={isDiscordSharing} showDiscordShare={showDiscordShare} />
                   ))}
                 </div>
               ) : (
-                <div style={styles.issue}>클리어 완료 파티가 없습니다.</div>
+                <div style={styles.issue}>클리어 완료 파티가 없거나 숨김 처리되었습니다.</div>
               )}
             </div>
           </div>
@@ -2783,6 +2864,199 @@ function ClearGoldRanking({ groups, completedPartyKeys }) {
   );
 }
 
+function AuctionCalculator() {
+  const [itemPriceInput, setItemPriceInput] = useState("0");
+  const [partySize, setPartySize] = useState(4);
+
+  const parseGoldInput = (value) => Number(String(value ?? "").replace(/[^0-9]/g, "") || 0);
+  const formatGoldInput = (value) => {
+    const number = parseGoldInput(value);
+    return number ? number.toLocaleString("ko-KR") : "0";
+  };
+
+  const price = parseGoldInput(itemPriceInput);
+  const members = Number(partySize || 4);
+  const afterFeePrice = Math.floor(price * 0.95);
+  const distributionBidPrice = members > 1 ? Math.floor((afterFeePrice * (members - 1)) / members) : 0;
+  const distributionMyGold = Math.max(0, afterFeePrice - distributionBidPrice);
+  const distributionOtherGold = members > 1 ? Math.floor(distributionBidPrice / (members - 1)) : 0;
+  const preemptBidPrice = distributionBidPrice > 0 ? Math.floor(distributionBidPrice / 1.1) : 0;
+  const preemptMyGold = Math.max(0, afterFeePrice - preemptBidPrice);
+  const preemptOtherGold = members > 1 ? Math.floor(preemptBidPrice / (members - 1)) : 0;
+
+  const numberInputStyle = {
+    ...styles.miniInput,
+    width: "140px",
+    textAlign: "right",
+  };
+
+  return (
+    <div style={styles.card}>
+      <div style={styles.cardPad}>
+        <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>경매 계산기</h2>
+        <p style={{ ...styles.smallText, marginTop: "4px" }}>
+          판매 수수료 5% 기준으로 분배 입찰가와 선점 입찰가를 계산합니다.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "14px" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+            <span style={{ ...styles.smallText, fontWeight: 900 }}>물품 가격</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={itemPriceInput}
+              onChange={(event) => setItemPriceInput(formatGoldInput(event.target.value))}
+              placeholder="0"
+              style={numberInputStyle}
+            />
+            <span style={styles.smallText}>골드</span>
+          </div>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+            <span style={{ ...styles.smallText, fontWeight: 900 }}>인원</span>
+            <button
+              type="button"
+              onClick={() => setPartySize(4)}
+              style={partySize === 4 ? styles.miniActiveButton : styles.miniButton}
+            >
+              4인
+            </button>
+            <button
+              type="button"
+              onClick={() => setPartySize(8)}
+              style={partySize === 8 ? styles.miniActiveButton : styles.miniButton}
+            >
+              8인
+            </button>
+          </div>
+
+          <div
+            style={{
+              border: "1px solid #e5e7eb",
+              borderRadius: "12px",
+              padding: "10px",
+              background: "#ffffff",
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+              <span style={{ ...styles.smallText, fontWeight: 900 }}>분배 입찰가</span>
+              <strong style={{ color: "#92400e" }}>{formatGold(distributionBidPrice) || "0"}골드</strong>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+              <span style={{ ...styles.smallText, fontWeight: 900 }}>내가 먹는 골드</span>
+              <strong>{formatGold(distributionMyGold) || "0"}골드</strong>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+              <span style={{ ...styles.smallText, fontWeight: 900 }}>남이 먹는 골드</span>
+              <strong>{formatGold(distributionOtherGold) || "0"}골드</strong>
+            </div>
+            <div style={{ height: "1px", background: "#e5e7eb", margin: "3px 0" }} />
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+              <span style={{ ...styles.smallText, fontWeight: 900 }}>선점 입찰가</span>
+              <strong style={{ color: "#1d4ed8" }}>{formatGold(preemptBidPrice) || "0"}골드</strong>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+              <span style={{ ...styles.smallText, fontWeight: 900 }}>내가 먹는 골드</span>
+              <strong>{formatGold(preemptMyGold) || "0"}골드</strong>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+              <span style={{ ...styles.smallText, fontWeight: 900 }}>남이 먹는 골드</span>
+              <strong>{formatGold(preemptOtherGold) || "0"}골드</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CpmCalculator() {
+  const [minutes, setMinutes] = useState(0);
+  const [seconds, setSeconds] = useState(0);
+  const [usageCount, setUsageCount] = useState(0);
+
+  const totalSeconds = Math.max(0, Number(minutes || 0) * 60 + Number(seconds || 0));
+  const safeUsageCount = Math.max(0, Number(usageCount || 0));
+  const cpm = totalSeconds > 0 ? safeUsageCount / (totalSeconds / 60) : 0;
+  const secondsPerUse = safeUsageCount > 0 ? totalSeconds / safeUsageCount : 0;
+
+  const numberInputStyle = {
+    ...styles.miniInput,
+    width: "72px",
+    textAlign: "right",
+  };
+
+  return (
+    <div style={styles.card}>
+      <div style={styles.cardPad}>
+        <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>CPM 계산기</h2>
+        <p style={{ ...styles.smallText, marginTop: "4px" }}>
+          클리어 시간과 사용횟수 기준으로 1분당 사용횟수를 계산합니다.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "14px" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+            <span style={{ ...styles.smallText, fontWeight: 900 }}>클리어 시간</span>
+            <input
+              type="number"
+              min="0"
+              value={minutes}
+              onChange={(event) => setMinutes(event.target.value)}
+              style={numberInputStyle}
+            />
+            <span style={styles.smallText}>분</span>
+            <input
+              type="number"
+              min="0"
+              max="59"
+              value={seconds}
+              onChange={(event) => setSeconds(event.target.value)}
+              style={numberInputStyle}
+            />
+            <span style={styles.smallText}>초</span>
+          </div>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+            <span style={{ ...styles.smallText, fontWeight: 900 }}>사용횟수</span>
+            <input
+              type="number"
+              min="0"
+              value={usageCount}
+              onChange={(event) => setUsageCount(event.target.value)}
+              style={numberInputStyle}
+            />
+            <span style={styles.smallText}>번</span>
+          </div>
+
+          <div
+            style={{
+              border: "1px solid #e5e7eb",
+              borderRadius: "12px",
+              padding: "10px",
+              background: "#ffffff",
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+              <span style={{ ...styles.smallText, fontWeight: 900 }}>CPM</span>
+              <strong>{formatNumber(cpm, 2)}회/분</strong>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+              <span style={{ ...styles.smallText, fontWeight: 900 }}>1회당 시간</span>
+              <strong>{formatNumber(secondsPerUse, 2)}초</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PartyCard({
   party,
   index,
@@ -2793,6 +3067,9 @@ function PartyCard({
   completedPartyKeys,
   onTogglePartyDone,
   isNarrowScreen = false,
+  onShareDiscordElement,
+  isDiscordSharing,
+  showDiscordShare = false,
 }) {
   const summary = summarizeParty(party);
   const members = getPartyMembers(party);
@@ -2831,6 +3108,7 @@ function PartyCard({
             }}
             onDragStartCharacter={onDragStartCharacter}
             onDropCharacter={onDropCharacter}
+            showCharacterSynergies
           />
         ) : (
           <EmptySlot
@@ -2852,6 +3130,7 @@ function PartyCard({
 
   return (
     <div
+      data-discord-share-card="true"
       style={{
         ...styles.card,
         opacity: isDone ? 0.48 : 1,
@@ -2887,11 +3166,19 @@ function PartyCard({
             </div>
           </div>
 
-          {!isEightRaid && (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
-              <SynergyBadges synergyCounts={summary.synergyCounts} />
-            </div>
-          )}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "6px", flexWrap: "wrap" }}>
+            {!isEightRaid && <SynergyBadges synergyCounts={summary.synergyCounts} />}
+            <DiscordShareButton
+              visible={showDiscordShare}
+              disabled={isDiscordSharing}
+              onClick={(event) =>
+                onShareDiscordElement?.(
+                  event.currentTarget.closest('[data-discord-share-card="true"]'),
+                  `${party.raid.name} ${isEightRaid ? `공대 ${index + 1}` : `파티 ${index + 1}`}`
+                )
+              }
+            />
+          </div>
         </div>
       </div>
 
@@ -2959,6 +3246,7 @@ export default function LostArkRaidPartyPlanner() {
   const [query, setQuery] = useState("");
   const [selectedRaidKeys] = useState(orderedRaids.map((raid) => raid.key));
   const [activeRaidFilters, setActiveRaidFilters] = useState(orderedRaids.map((raid) => raid.key));
+  const [hideClearedRaids, setHideClearedRaids] = useState(false);
   const [activeOwnerFilters, setActiveOwnerFilters] = useState([]);
   const [roleOverrides, setRoleOverrides] = useState({});
   const [ownerToggles, setOwnerToggles] = useState({});
@@ -2994,6 +3282,9 @@ export default function LostArkRaidPartyPlanner() {
   const hasLoadedSharedStateRef = useRef(false);
   const isApplyingSharedStateRef = useRef(false);
   const lastSavedSharedStateRef = useRef("");
+  const [discordWebhookUrl, setDiscordWebhookUrl] = useState(() => localStorage.getItem(DISCORD_WEBHOOK_STORAGE_KEY) ?? "");
+  const [discordWebhookDraft, setDiscordWebhookDraft] = useState(() => localStorage.getItem(DISCORD_WEBHOOK_STORAGE_KEY) ?? "");
+  const [isDiscordSharing, setIsDiscordSharing] = useState(false);
 
   const syncLoadedGroups = (groups) => syncGroupMembersWithCharacters(groups, characters);
 
@@ -3104,6 +3395,66 @@ export default function LostArkRaidPartyPlanner() {
       setSharedSyncStatus(error.message || "캐릭터 정보 갱신에 실패했습니다.");
     } finally {
       setIsRefreshingCharacters(false);
+    }
+  };
+
+
+  const saveDiscordWebhookUrl = () => {
+    const value = discordWebhookDraft.trim();
+
+    if (!value) {
+      localStorage.removeItem(DISCORD_WEBHOOK_STORAGE_KEY);
+      setDiscordWebhookUrl("");
+      setDiscordWebhookDraft("");
+      setSharedSyncStatus("Discord Webhook URL이 삭제되었습니다.");
+      return;
+    }
+
+    localStorage.setItem(DISCORD_WEBHOOK_STORAGE_KEY, value);
+    setDiscordWebhookUrl(value);
+    setSharedSyncStatus("Discord Webhook URL이 저장되었습니다.");
+  };
+
+  const shareDiscordElement = async (element, title) => {
+    if (!discordWebhookUrl.trim()) {
+      setSharedSyncStatus("Discord Webhook URL을 먼저 저장하세요.");
+      return;
+    }
+
+    if (!element || isDiscordSharing) return;
+
+    try {
+      setIsDiscordSharing(true);
+      setSharedSyncStatus("디스코드 이미지 공유 중...");
+
+      const blob = await toBlob(element, {
+        backgroundColor: "#ffffff",
+        pixelRatio: 1,
+        cacheBust: true,
+        filter: (node) => {
+          if (!(node instanceof HTMLElement)) return true;
+          return node.dataset.discordShareHidden !== "true";
+        },
+      });
+
+      if (!blob) {
+        throw new Error("이미지 생성에 실패했습니다.");
+      }
+
+      const formData = new FormData();
+      formData.append("files[0]", blob, makeDiscordImageFileName(title));
+
+      await fetch(discordWebhookUrl.trim(), {
+        method: "POST",
+        mode: "no-cors",
+        body: formData,
+      });
+
+      setSharedSyncStatus("디스코드 공유 요청 완료");
+    } catch (error) {
+      setSharedSyncStatus(`디스코드 공유 실패: ${error.message}`);
+    } finally {
+      setIsDiscordSharing(false);
     }
   };
 
@@ -3916,6 +4267,7 @@ export default function LostArkRaidPartyPlanner() {
     .filter((group) => activeRaidFilters.includes(group.raid.key))
     .map((group) => {
       const visibleParties = group.parties.filter((party) => {
+        if (hideClearedRaids && completedPartyKeys.includes(getPartyDoneKey(party))) return false;
         if (!isPartyMatchedBySearch(party)) return false;
         if (!isPartyMatchedByOwnerFilter(party)) return false;
 
@@ -4216,12 +4568,30 @@ export default function LostArkRaidPartyPlanner() {
                   )}
                   {isRefreshingCharacters ? "갱신 중..." : "캐릭터 갱신"}
                 </button>
+                <input
+                  type="password"
+                  value={discordWebhookDraft}
+                  onChange={(event) => setDiscordWebhookDraft(event.target.value)}
+                  placeholder="Discord Webhook URL"
+                  style={{ ...styles.miniInput, width: "260px" }}
+                />
+                <button type="button" onClick={saveDiscordWebhookUrl} style={styles.miniButton}>
+                  웹후크 저장
+                </button>
               </div>
             </div>
           )}
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
             <span style={{ ...styles.smallText, fontWeight: 900 }}>레이드 필터</span>
+            <button
+              type="button"
+              onClick={() => setHideClearedRaids((value) => !value)}
+              style={hideClearedRaids ? styles.miniButton : styles.miniActiveButton}
+              title="클리어한 파티/공대를 숨깁니다"
+            >
+              클리어
+            </button>
             {orderedRaids.map((raid) => (
               <button
                 key={`filter-${raid.key}`}
@@ -4294,6 +4664,17 @@ export default function LostArkRaidPartyPlanner() {
                   </a>
                 );
               })}
+              <a
+                href="#utility-tools-section"
+                style={{
+                  ...styles.miniButton,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  textDecoration: "none",
+                }}
+              >
+                편의도구
+              </a>
             </div>
 
             <input
@@ -4341,6 +4722,9 @@ export default function LostArkRaidPartyPlanner() {
             groups={visibleGroups}
             completedPartyKeys={completedPartyKeys}
             onTogglePartyDone={togglePartyDone}
+            onShareDiscordElement={shareDiscordElement}
+            isDiscordSharing={isDiscordSharing}
+            showDiscordShare={Boolean(discordWebhookUrl.trim())}
           />
         )}
 
@@ -4349,6 +4733,9 @@ export default function LostArkRaidPartyPlanner() {
             groups={visibleGroups}
             completedPartyKeys={completedPartyKeys}
             onTogglePartyDone={togglePartyDone}
+            onShareDiscordElement={shareDiscordElement}
+            isDiscordSharing={isDiscordSharing}
+            showDiscordShare={Boolean(discordWebhookUrl.trim())}
           />
         )}
 
@@ -4498,6 +4885,9 @@ export default function LostArkRaidPartyPlanner() {
                         completedPartyKeys={completedPartyKeys}
                         onTogglePartyDone={togglePartyDone}
                         isNarrowScreen={isNarrowScreen}
+                        onShareDiscordElement={shareDiscordElement}
+                        isDiscordSharing={isDiscordSharing}
+                        showDiscordShare={Boolean(discordWebhookUrl.trim())}
                       />
                     ))}
                   </div>
@@ -4624,10 +5014,16 @@ export default function LostArkRaidPartyPlanner() {
               </div>
             </div>
 
-            <ClearGoldRanking
-              groups={getCurrentFinalGroups()}
-              completedPartyKeys={completedPartyKeys}
-            />
+            <div id="utility-tools-section" style={{ display: "flex", flexDirection: "column", gap: "10px", scrollMarginTop: "180px" }}>
+              <ClearGoldRanking
+                groups={getCurrentFinalGroups()}
+                completedPartyKeys={completedPartyKeys}
+              />
+
+              <AuctionCalculator />
+
+              <CpmCalculator />
+            </div>
           </div>
         </section>
       </div>
