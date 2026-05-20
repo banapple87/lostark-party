@@ -4286,7 +4286,7 @@ export default function LostArkRaidPartyPlanner() {
       <main style={styles.page}>
         <div style={styles.container}>
           <section style={styles.hero}>
-            <h1 style={styles.title}>Lost Ark Raid Planner</h1>
+            <h1 style={styles.title}>LostArk Raid Planner</h1>
             <p style={styles.desc}>캐릭터 정보를 불러오는 중...</p>
           </section>
         </div>
