@@ -45,6 +45,17 @@ const SHEET_STATE_API_URL = "https://script.google.com/macros/s/AKfycbwmCdm0iY4E
 const SHARED_STATE_VERSION = 1;
 const DISCORD_WEBHOOK_STORAGE_KEY = "lostark_party_discord_webhook_url";
 
+const DISCORD_OWNER_MENTIONS = {
+  영수: "<@417696097444691968>",
+  찬범: "<@334625304691605514>",
+  재진: "<@385005540092280842>",
+  강찬: "<@327454010854604801>",
+  준형: "<@420241555111149570>",
+  준혁: "<@327822837270446082>",
+  혁준: "<@264369748626767872>",
+  혜연: "<@483844597500346378>",
+};
+
 const styles = {
   page: {
     minHeight: "100vh",
@@ -575,6 +586,41 @@ function makeDiscordImageFileName(title) {
     .replace(/[\/:*?"<>|]/g, "_")
     .replace(/\s+/g, "_")
     .slice(0, 80)}.png`;
+}
+
+function getDiscordOwnerMention(owner) {
+  return DISCORD_OWNER_MENTIONS[owner] ?? `@${owner}`;
+}
+
+function getUniqueMembers(members = []) {
+  const map = new Map();
+
+  for (const member of members) {
+    if (!member) continue;
+    const id = getCharacterId(member);
+    if (!map.has(id)) map.set(id, member);
+  }
+
+  return [...map.values()];
+}
+
+function getPartiesMembers(parties = []) {
+  return getUniqueMembers(parties.flatMap((party) => getPartyMembers(party)));
+}
+
+function getGroupsMembers(groups = []) {
+  return getPartiesMembers(groups.flatMap((group) => group.parties ?? []));
+}
+
+function getConcurrentItemsMembers(items = []) {
+  return getPartiesMembers(items.map((item) => item.party).filter(Boolean));
+}
+
+function makeDiscordShareContent(title, members = []) {
+  const owners = [...new Set(getUniqueMembers(members).map((member) => member.owner).filter(Boolean))];
+  const mentionText = owners.map(getDiscordOwnerMention).join(" ");
+
+  return [title, mentionText].filter(Boolean).join("\n");
 }
 
 function normalizeText(value) {
@@ -2336,6 +2382,7 @@ function RaidOverview({ groups, completedPartyKeys, onTogglePartyDone, onShareDi
   const orderedGroups = [...groups].sort(
     (a, b) => getRaidOrderValue(a.raid) - getRaidOrderValue(b.raid)
   );
+  const overviewMembers = getGroupsMembers(orderedGroups);
 
   const renderOverviewGroup = (group) => (
     <div key={`overview-${group.raid.key}`} style={styles.overviewRaidCard}>
@@ -2390,7 +2437,8 @@ function RaidOverview({ groups, completedPartyKeys, onTogglePartyDone, onShareDi
                     onClick={(event) =>
                       onShareDiscordElement?.(
                         event.currentTarget.closest('[data-discord-share-card="true"]'),
-                        `${group.raid.name} ${isEightRaid ? `공대 ${partyIndex + 1}` : `파티 ${partyIndex + 1}`}`
+                        `${group.raid.name} ${isEightRaid ? `공대 ${partyIndex + 1}` : `파티 ${partyIndex + 1}`}`,
+                        getPartyMembers(party)
                       )
                     }
                   />
@@ -2430,15 +2478,26 @@ function RaidOverview({ groups, completedPartyKeys, onTogglePartyDone, onShareDi
   );
 
   return (
-    <section style={styles.card}>
+    <section data-discord-share-card="true" style={styles.card}>
       <div style={styles.cardPad}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", marginBottom: "10px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", marginBottom: "10px", alignItems: "flex-start" }}>
           <div>
             <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>레이드 현황 한눈에 보기</h2>
             <p style={{ ...styles.smallText, margin: "6px 0 0" }}>
               레이드 현황을 최소 정보로 최대한 많이 보여줍니다.
             </p>
           </div>
+          <DiscordShareButton
+            visible={showDiscordShare}
+            disabled={isDiscordSharing}
+            onClick={(event) =>
+              onShareDiscordElement?.(
+                event.currentTarget.closest('[data-discord-share-card="true"]'),
+                "레이드 현황 한눈에 보기",
+                overviewMembers
+              )
+            }
+          />
         </div>
 
         <div style={styles.overviewGrid}>
@@ -2595,7 +2654,8 @@ function ConcurrentRunCard({ item, completedPartyKeys, onTogglePartyDone, onShar
             onClick={(event) =>
               onShareDiscordElement?.(
                 event.currentTarget.closest('[data-discord-share-card="true"]'),
-                `${item.raid.name} ${isEightRaid ? `공대 ${item.partyIndex + 1}` : `파티 ${item.partyIndex + 1}`}`
+                `${item.raid.name} ${isEightRaid ? `공대 ${item.partyIndex + 1}` : `파티 ${item.partyIndex + 1}`}`,
+                getPartyMembers(item.party)
               )
             }
           />
@@ -2633,6 +2693,7 @@ function ConcurrentRunCard({ item, completedPartyKeys, onTogglePartyDone, onShar
 
 function ConcurrentRunOverview({ groups, completedPartyKeys, onTogglePartyDone, onShareDiscordElement, isDiscordSharing, showDiscordShare }) {
   const plan = buildConcurrentRunPlan(groups, completedPartyKeys);
+  const concurrentMembers = getGroupsMembers(groups);
 
   const toggleRunDone = (items) => {
     const keys = items.map((item) => getPartyDoneKey(item.party));
@@ -2647,15 +2708,26 @@ function ConcurrentRunOverview({ groups, completedPartyKeys, onTogglePartyDone, 
   };
 
   return (
-    <section style={styles.card}>
+    <section data-discord-share-card="true" style={styles.card}>
       <div style={styles.cardPad}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", marginBottom: "10px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", marginBottom: "10px", alignItems: "flex-start" }}>
           <div>
             <h2 style={{ ...styles.sectionTitle, fontSize: "22px" }}>동시 진행 보기</h2>
             <p style={{ ...styles.smallText, margin: "6px 0 0" }}>
               완료되지 않은 4인 파티 중 유저가 겹치지 않는 조합을 묶어서 보여줍니다.
             </p>
           </div>
+          <DiscordShareButton
+            visible={showDiscordShare}
+            disabled={isDiscordSharing}
+            onClick={(event) =>
+              onShareDiscordElement?.(
+                event.currentTarget.closest('[data-discord-share-card="true"]'),
+                "동시 진행 보기",
+                concurrentMembers
+              )
+            }
+          />
         </div>
 
         {plan.eightMemberParties.length > 0 && (
@@ -2691,7 +2763,8 @@ function ConcurrentRunOverview({ groups, completedPartyKeys, onTogglePartyDone, 
                     onClick={(event) =>
                       onShareDiscordElement?.(
                         event.currentTarget.closest('[data-discord-share-card="true"]'),
-                        `${index + 1}번 동시 출발`
+                        `${index + 1}번 동시 출발`,
+                        getConcurrentItemsMembers(pairItem.pair)
                       )
                     }
                   />
@@ -3174,7 +3247,8 @@ function PartyCard({
               onClick={(event) =>
                 onShareDiscordElement?.(
                   event.currentTarget.closest('[data-discord-share-card="true"]'),
-                  `${party.raid.name} ${isEightRaid ? `공대 ${index + 1}` : `파티 ${index + 1}`}`
+                  `${party.raid.name} ${isEightRaid ? `공대 ${index + 1}` : `파티 ${index + 1}`}`,
+                  getPartyMembers(party)
                 )
               }
             />
@@ -3415,7 +3489,7 @@ export default function LostArkRaidPartyPlanner() {
     setSharedSyncStatus("Discord Webhook URL이 저장되었습니다.");
   };
 
-  const shareDiscordElement = async (element, title) => {
+  const shareDiscordElement = async (element, title, members = []) => {
     if (!discordWebhookUrl.trim()) {
       setSharedSyncStatus("Discord Webhook URL을 먼저 저장하세요.");
       return;
@@ -3442,6 +3516,7 @@ export default function LostArkRaidPartyPlanner() {
       }
 
       const formData = new FormData();
+      formData.append("payload_json", JSON.stringify({ content: makeDiscordShareContent(title, members) }));
       formData.append("files[0]", blob, makeDiscordImageFileName(title));
 
       await fetch(discordWebhookUrl.trim(), {
