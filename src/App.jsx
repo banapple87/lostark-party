@@ -4058,75 +4058,138 @@ export default function LostArkRaidPartyPlanner() {
     }));
   };
 
-  const changeRaidPreference = (character, family) => {
-    clearManualSwapsForAutoRebuild();
-    setRaidPreferences((prev) => {
-      const availableRaids = getAvailableRaidsForFamily(character, family);
-      if (!availableRaids.length) return prev;
+  const getNextRaidPreferencesForFamily = (prev, character, family) => {
+    const availableRaids = getAvailableRaidsForFamily(character, family);
+    if (!availableRaids.length) return prev;
 
-      const defaultRaid = getDefaultRaidForFamily(character, family);
-      const forcedKey = family.keys.find(
-        (raidKey) => getRaidPreference(prev, character, raidKey) === "FORCE"
-      );
-      const isCurrentlyExcluded = isRaidFamilyExcluded(character, family, prev);
+    const defaultRaid = getDefaultRaidForFamily(character, family);
+    const forcedKey = family.keys.find(
+      (raidKey) => getRaidPreference(prev, character, raidKey) === "FORCE"
+    );
+    const isCurrentlyExcluded = isRaidFamilyExcluded(character, family, prev);
 
-      const next = { ...prev };
-      const setFamilyAuto = () => {
-        for (const raidKey of family.keys) {
-          next[getRaidPreferenceKey(character, raidKey)] = "AUTO";
-        }
-      };
-
-      const setFamilyExcluded = () => {
-        for (const raidKey of family.keys) {
-          next[getRaidPreferenceKey(character, raidKey)] = "EXCLUDE";
-        }
-      };
-
-      const setFamilyForced = (raid) => {
-        for (const raidKey of family.keys) {
-          next[getRaidPreferenceKey(character, raidKey)] =
-            raidKey === raid.key ? "FORCE" : "EXCLUDE";
-        }
-      };
-
-      
-      
-      const defaultIndex = defaultRaid
-        ? availableRaids.findIndex((raid) => raid.key === defaultRaid.key)
-        : -1;
-
-      const cycleRaids = defaultIndex >= 0
-        ? [
-            availableRaids[defaultIndex],
-            ...availableRaids.slice(0, defaultIndex),
-            ...availableRaids.slice(defaultIndex + 1),
-          ]
-        : availableRaids;
-
-      if (isCurrentlyExcluded) {
-        setFamilyAuto();
-        return next;
+    const next = { ...prev };
+    const setFamilyAuto = () => {
+      for (const raidKey of family.keys) {
+        next[getRaidPreferenceKey(character, raidKey)] = "AUTO";
       }
+    };
 
-      const currentRaidKey = forcedKey || defaultRaid?.key || cycleRaids[0]?.key;
-      const currentIndex = cycleRaids.findIndex((raid) => raid.key === currentRaidKey);
-      const nextIndex = currentIndex + 1;
-
-      if (nextIndex >= cycleRaids.length) {
-        setFamilyExcluded();
-        return next;
+    const setFamilyExcluded = () => {
+      for (const raidKey of family.keys) {
+        next[getRaidPreferenceKey(character, raidKey)] = "EXCLUDE";
       }
+    };
 
-      const nextRaid = cycleRaids[nextIndex];
-
-      if (defaultRaid && nextRaid.key === defaultRaid.key) {
-        setFamilyAuto();
-        return next;
+    const setFamilyForced = (raid) => {
+      for (const raidKey of family.keys) {
+        next[getRaidPreferenceKey(character, raidKey)] =
+          raidKey === raid.key ? "FORCE" : "EXCLUDE";
       }
+    };
 
-      setFamilyForced(nextRaid);
+    const defaultIndex = defaultRaid
+      ? availableRaids.findIndex((raid) => raid.key === defaultRaid.key)
+      : -1;
+
+    const cycleRaids = defaultIndex >= 0
+      ? [
+          availableRaids[defaultIndex],
+          ...availableRaids.slice(0, defaultIndex),
+          ...availableRaids.slice(defaultIndex + 1),
+        ]
+      : availableRaids;
+
+    if (isCurrentlyExcluded) {
+      setFamilyAuto();
       return next;
+    }
+
+    const currentRaidKey = forcedKey || defaultRaid?.key || cycleRaids[0]?.key;
+    const currentIndex = cycleRaids.findIndex((raid) => raid.key === currentRaidKey);
+    const nextIndex = currentIndex + 1;
+
+    if (nextIndex >= cycleRaids.length) {
+      setFamilyExcluded();
+      return next;
+    }
+
+    const nextRaid = cycleRaids[nextIndex];
+
+    if (defaultRaid && nextRaid.key === defaultRaid.key) {
+      setFamilyAuto();
+      return next;
+    }
+
+    setFamilyForced(nextRaid);
+    return next;
+  };
+
+  const changeRaidPreference = (character, family) => {
+    setRaidPreferences((prev) => {
+      const prevSelectedRaid = getSelectedRaidForFamily(character, family, prev);
+      const nextRaidPreferences = getNextRaidPreferencesForFamily(prev, character, family);
+      if (nextRaidPreferences === prev) return prev;
+
+      const nextSelectedRaid = getSelectedRaidForFamily(character, family, nextRaidPreferences);
+      const affectedRaidKeys = [prevSelectedRaid?.key, nextSelectedRaid?.key].filter(Boolean);
+      const uniqueAffectedRaidKeys = [...new Set(affectedRaidKeys)];
+
+      if (uniqueAffectedRaidKeys.length) {
+        const rebuiltSchedule = generateSchedule({
+          characters,
+          selectedRaidKeys,
+          roleOverrides,
+          ownerToggles,
+          raidPreferences: nextRaidPreferences,
+          seed,
+        });
+
+        const rebuiltGroups = rebuiltSchedule.groups.filter((group) =>
+          uniqueAffectedRaidKeys.includes(group.raid.key)
+        );
+
+        if (rebuiltGroups.length) {
+          setSavedScheduleGroups((currentSavedGroups) => {
+            const baseGroups =
+              hydrateSavedScheduleGroups(currentSavedGroups) ??
+              (isValidScheduleGroups(currentSavedGroups) ? currentSavedGroups : finalGroups);
+
+            return rebuiltGroups.reduce(
+              (groups, rebuiltGroup) => replaceRaidGroupOnly(groups, rebuiltGroup.raid.key, rebuiltGroup),
+              baseGroups
+            );
+          });
+        }
+      }
+
+      setManualSwaps((prevSwaps) =>
+        prevSwaps.filter(
+          (swap) =>
+            !uniqueAffectedRaidKeys.includes(swap.from?.raidKey) &&
+            !uniqueAffectedRaidKeys.includes(swap.to?.raidKey)
+        )
+      );
+      setConfirmedManualSwaps((prevSwaps) =>
+        prevSwaps.filter(
+          (swap) =>
+            !uniqueAffectedRaidKeys.includes(swap.from?.raidKey) &&
+            !uniqueAffectedRaidKeys.includes(swap.to?.raidKey)
+        )
+      );
+      setManualSwapMessage("");
+      setManualEditPending(false);
+      setSavedScheduleGroupsBeforePending(null);
+      setLastSyncedSavedScheduleGroups(null);
+
+      const affectedRaidNames = uniqueAffectedRaidKeys
+        .map(getRaidByKey)
+        .filter(Boolean)
+        .map((raid) => raid.name)
+        .join(", ");
+      setSharedSyncStatus(`${affectedRaidNames || family.label}만 다시 편성됨 · 저장 버튼을 누르면 공유됩니다.`);
+
+      return nextRaidPreferences;
     });
   };
 
